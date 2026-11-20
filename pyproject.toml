@@ -1,0 +1,37 @@
+[project]
+name = "hackathon-osmo"
+version = "0.1.0"
+description = "Synchronisation Google Pixel 11 Pro (USB-C) + MacBook Pro + DJI Osmo Mobile 3 (BLE) pour face tracking en temps réel"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "av>=13.0.0",
+    "bleak>=1.0.0",
+    "fastapi>=0.115.0",
+    "httpx>=0.27.0",
+    "numpy>=1.26.0",
+    "opencv-python>=4.10.0",
+    "pyobjc-framework-quartz>=11.0",
+    "pyobjc-framework-vision>=11.0",
+    "python-dotenv>=1.0.1",
+    "python-multipart>=0.0.12",
+    "uvicorn[standard]>=0.32.0",
+]
+
+[project.scripts]
+osmo-app = "hackathon_osmo.app.server:main"
+osmo-calibrate = "hackathon_osmo.control.calibrate:main"
+osmo-probe = "hackathon_osmo.tools.probe:main"
+osmo-sync-test = "hackathon_osmo.tools.sync_test:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hackathon_osmo"]

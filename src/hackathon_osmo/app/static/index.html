@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>hackathon_osmo — Studio Tracking & Contrôle IA</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+<header>
+  <h1>hackathon_osmo — Studio IA & Tracking</h1>
+  <div class="pills">
+    <span class="pill"><span id="dot-cam" class="dot"></span><span id="lbl-cam">Pixel 11 Pro : ...</span></span>
+    <span class="pill"><span id="dot-hl" class="dot"></span><span id="lbl-hl">HiLight : ...</span></span>
+    <span class="pill"><span id="dot-osmo" class="dot"></span><span id="lbl-osmo">Osmo BLE : ...</span></span>
+    <button id="btn-live" onclick="toggleLiveMotors()">Moteurs : DRY-RUN</button>
+  </div>
+</header>
+
+<main>
+  <!-- Left column: Live video + Voice companion + Event log -->
+  <div>
+    <div class="card">
+      <h2>
+        <span>Retour Caméra Pixel 11 Pro (H.264 → Apple Vision)</span>
+        <span id="lbl-fps" class="mono">0 fps</span>
+      </h2>
+      <div class="video-wrap">
+        <canvas id="feed-canvas"></canvas>
+      </div>
+      <div class="toolbar">
+        <button id="btn-front" class="active" onclick="send({action:'camera', facing:'front'})">Caméra Selfie (Visage)</button>
+        <button id="btn-back" onclick="send({action:'camera', facing:'back'})">Caméra Arrière (Feuille)</button>
+        <button onclick="rotateNext()">Pivoter 90° (<span id="lbl-rot">0°</span>)</button>
+        <button id="btn-mirror" class="active" onclick="toggleMirror()">Miroir</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>
+        <span>🎙️ Dialogue Vocal — Voxtral 3 (Mistral) + Cerveau Vision (OpenRouter)</span>
+        <span id="lbl-voice-status" class="mono">Prêt</span>
+      </h2>
+      <div class="voice-bar">
+        <button id="btn-ptt" class="ptt-btn"
+          onmousedown="startPTT()" onmouseup="stopPTT()" onmouseleave="if(pttActive) stopPTT()"
+          ontouchstart="event.preventDefault(); startPTT()" ontouchend="event.preventDefault(); stopPTT()">
+          🎙️ Maintenir pour parler (Espace)
+        </button>
+        <button id="btn-vad" onclick="toggleHandsFree()">🔊 Mains libres (Auto)</button>
+        <div class="vu-wrap"><div id="vu-fill" class="vu-fill"></div></div>
+      </div>
+      <div class="voice-bar">
+        <select id="sel-model" onchange="updateVoiceCfg()">
+          <option value="openai/gpt-6.2-sol">GPT-6.2 Sol (~1,5s Vision)</option>
+          <option value="google/gemini-2.5-flash">Gemini 2.5 Flash (~0,75s Ultra-rapide)</option>
+          <option value="google/gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (~1,0s)</option>
+        </select>
+        <select id="sel-voice" onchange="updateVoiceCfg()">
+          <option value="voice_592">Voix : Marie (FR)</option>
+          <option value="voice_3137">Voix : Manon (FR)</option>
+          <option value="voice_589">Voix : Léa (FR)</option>
+          <option value="voice_3141">Voix : Camille (FR)</option>
+        </select>
+        <button id="btn-vision" class="active" onclick="toggleVision()">👁️ Vision</button>
+        <button id="btn-out" class="active" onclick="toggleAudioOut()">🔈 Sortie : MacBook</button>
+        <button onclick="send({action:'voice_config', clear_history:true})">🧹 Reset</button>
+      </div>
+      <div class="voice-bar">
+        <input id="txt-prompt" type="text" style="flex:1" placeholder="Ou écris un message ici (ex: Est-ce que 2+2 font 5 ? / Qu'est-ce que tu vois ?)"
+          onkeydown="if(event.key==='Enter') sendTextTurn()" />
+        <button onclick="sendTextTurn()">Envoyer</button>
+      </div>
+      <div class="chat-box" id="chat-box">
+        <div style="color:var(--muted); font-size:12px">Appuie sur <b>Espace</b> ou active <b>Mains libres</b> pour parler à Osmo…</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Interprétation IA en temps réel</h2>
+      <div class="summary-box">
+        <span id="lbl-summary">Initialisation...</span>
+        <span id="lbl-state" class="badge">IDLE</span>
+      </div>
+      <div class="log" id="event-log"></div>
+    </div>
+  </div>
+
+  <!-- Right column: Radar + Telemetry + Gestures + HiLight + PID -->
+  <div>
+    <div class="card">
+      <h2>Radar Visage & Vecteur de suivi</h2>
+      <div class="radar-row">
+        <canvas id="radar" width="150" height="150"></canvas>
+        <div class="grid-2" style="flex:1">
+          <div class="metric"><div class="k">Visage X / Y</div><div class="v" id="m-xy">—</div></div>
+          <div class="metric"><div class="k">Apple Vision</div><div class="v" id="m-ms">—</div></div>
+          <div class="metric"><div class="k">Cmd Yaw</div><div class="v" id="m-vyaw">0.0°/s</div></div>
+          <div class="metric"><div class="k">Cmd Pitch</div><div class="v" id="m-vpitch">0.0°/s</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>
+        <span>Télémétrie DJI Osmo Mobile 3 (BLE)</span>
+        <span class="mono" id="m-pkts">0 pkts</span>
+      </h2>
+      <div class="grid-3">
+        <div class="metric"><div class="k">Pitch</div><div class="v" id="m-pitch">—</div></div>
+        <div class="metric"><div class="k">Roll</div><div class="v" id="m-roll">—</div></div>
+        <div class="metric"><div class="k">Yaw</div><div class="v" id="m-yaw">—</div></div>
+      </div>
+      <div class="toolbar" style="margin-top:10px">
+        <button id="btn-mode-speed" class="active" onclick="send({action:'set_control_mode', mode:'speed'})">Speed (0x0C)</button>
+        <button id="btn-mode-rel" onclick="send({action:'set_control_mode', mode:'relative'})">Relative (0x14)</button>
+        <button id="btn-mode-joy" onclick="send({action:'set_control_mode', mode:'joystick'})">Joystick (0x01)</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Gestes expressifs « humains » (Motion Arbiter)</h2>
+      <div class="toolbar" style="margin-top:0" id="gesture-buttons">
+        <button onclick="send({action:'gesture', id:'nod_yes'})">👍 Oui (Hocher)</button>
+        <button onclick="send({action:'gesture', id:'shake_no'})">🙅 Non (Secouer)</button>
+        <button onclick="send({action:'gesture', id:'curious_tilt'})">🤔 Curieux</button>
+        <button onclick="send({action:'gesture', id:'look_desk'})">📄 Regarder la feuille</button>
+        <button onclick="send({action:'gesture', id:'look_up'})">🙂 Revenir au visage</button>
+        <button onclick="send({action:'recenter'})">🎯 Recentrer (Paysage)</button>
+        <button onclick="send({action:'toggle_orientation'})">🔄 Paysage ↔ Portrait</button>
+        <button onclick="send({action:'search_now'})">🔍 Balayage recherche</button>
+      </div>
+      <div style="margin-top:10px; font-size:11.5px; color:var(--muted)">LED HiLight arrière Pixel 11 Pro (8 segments RGB) :</div>
+      <div class="toolbar" style="margin-top:4px">
+        <button onclick="send({action:'hilight', reaction:'yes'})">🟢 Vert (Oui)</button>
+        <button onclick="send({action:'hilight', reaction:'no'})">🔴 Rouge (Non)</button>
+        <button onclick="send({action:'hilight', reaction:'curious'})">🟡 Curieux</button>
+        <button onclick="send({action:'hilight', reaction:'search'})">🔵 Comète</button>
+        <button onclick="send({action:'hilight', reaction:'desk'})">⚪ Feuille</button>
+        <button onclick="send({action:'hilight', reaction:'off'})">⚫ Off</button>
+      </div>
+      <div style="margin-top:10px; font-size:11.5px; color:var(--muted)">Si visage perdu :</div>
+      <div class="toolbar" style="margin-top:4px">
+        <button id="btn-pol-search" class="active" onclick="send({action:'set_lost_policy', policy:'search'})">🔍 Scan → Paysage</button>
+        <button id="btn-pol-home" onclick="send({action:'set_lost_policy', policy:'home'})">🏠 Retour Paysage</button>
+        <button id="btn-pol-last" onclick="send({action:'set_lost_policy', policy:'last_pos'})">📍 Dernière position</button>
+      </div>
+      <div style="margin-top:12px; display:flex; align-items:center; justify-content:space-between; gap:10px">
+        <div style="color:var(--muted); font-size:12px">Test manuel (maintenir) :</div>
+        <div class="dpad">
+          <div></div>
+          <button onmousedown="jog(0, -45)" onmouseup="jogStop()" onmouseleave="jogStop()">▲</button>
+          <div></div>
+          <button onmousedown="jog(-55, 0)" onmouseup="jogStop()" onmouseleave="jogStop()">◀</button>
+          <button class="danger" onclick="jogStop()">■</button>
+          <button onmousedown="jog(55, 0)" onmouseup="jogStop()" onmouseleave="jogStop()">▶</button>
+          <div></div>
+          <button onmousedown="jog(0, 45)" onmouseup="jogStop()" onmouseleave="jogStop()">▼</button>
+          <div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Réglages PID & Axes</h2>
+      <div class="slider-row">
+        <span>Gain Kp</span>
+        <input id="sl-kp" type="range" min="10" max="120" step="5" value="55" oninput="pushPid()" />
+        <span class="mono" id="v-kp">55</span>
+      </div>
+      <div class="slider-row">
+        <span>Deadzone</span>
+        <input id="sl-dz" type="range" min="0.02" max="0.25" step="0.01" value="0.08" oninput="pushPid()" />
+        <span class="mono" id="v-dz">0.08</span>
+      </div>
+      <div class="slider-row">
+        <span>Vitesse max</span>
+        <input id="sl-max" type="range" min="10" max="90" step="5" value="45" oninput="pushPid()" />
+        <span class="mono" id="v-max">45</span>
+      </div>
+      <div class="toolbar">
+        <button id="btn-swap" onclick="toggleInv('swap')">Échanger X/Y</button>
+        <button id="btn-inv-yaw" onclick="toggleInv('yaw')">Inverser Yaw</button>
+        <button id="btn-inv-pitch" onclick="toggleInv('pitch')">Inverser Pitch</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="/static/studio.js"></script>
+<script src="/static/voice.js"></script>
+</body>
+</html>

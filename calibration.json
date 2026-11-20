@@ -1,0 +1,22 @@
+{
+  "rotate_deg": 0,
+  "mirror": true,
+  "control_mode": "speed",
+  "swap_axes": true,
+  "invert_yaw": true,
+  "invert_pitch": true,
+  "kp": 45.0,
+  "kp_yaw": 58.6,
+  "kp_pitch": 31.4,
+  "kd": 3.6,
+  "deadzone": 0.09,
+  "max_dps": 55.0,
+  "measured": {
+    "a_dx_norm": 0.0,
+    "a_dy_norm": 0.59,
+    "b_dx_norm": 0.336,
+    "b_dy_norm": -0.003,
+    "k_horiz": 0.0213,
+    "k_vert": 0.0375
+  }
+}
