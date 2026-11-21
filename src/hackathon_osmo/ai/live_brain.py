@@ -118,7 +118,7 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
                 },
                 "ultra_hd": {
                     "type": "boolean",
-                    "description": "true pour 4K (3840x2160) sur écriture manuscrite fine ; false pour 2688x1512 rapide.",
+                    "description": "false par défaut (2688x1512 déjà très net et 2x plus rapide) ; true UNIQUEMENT si du texte minuscule reste illisible en 2688x1512.",
                 },
                 "retarget_sheet": {
                     "type": "boolean",

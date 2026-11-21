@@ -263,7 +263,7 @@ class StudioRuntime:
         self.osmo_last_tx = f"imu-servo mY={m_yaw:+.1f} mP={m_pitch:+.1f}"
 
     async def _servo_pitch_to_imu(self, target_pitch_deg: float, timeout_s: float = 3.8) -> float | None:
-        """Closed-loop IMU pitch servo with continuous divergence guard (NEVER tilts toward ceiling).
+        """Closed-loop IMU pitch servo tuned for OM3's 1 Hz IMU telemetry rate (with dead-reckoning between packets).
 
         Empirically verified on Pixel 11 Pro + OM3:
         - Negative body tilt_dps raises IMU pitch toward +49.3° (rear camera pointing DOWN at desk).
@@ -275,45 +275,62 @@ class StudioRuntime:
         if abs(target_pitch_deg - cur) <= 2.5:
             return cur
 
-        # Verified polarity: increasing IMU pitch (e.g. 0° -> +49.3° desk) needs negative body tilt_dps
         sign_for_pos_err = -1.0
         best_err = abs(target_pitch_deg - cur)
-        t_start = time.monotonic()
+        last_imu_ts = self._osmo.last_attitude.updated_at
+        est_pitch = cur
+        last_t = time.monotonic()
         flipped = False
-        deadline = t_start + timeout_s
+        deadline = last_t + timeout_s
 
         while time.monotonic() < deadline and self.osmo_connected:
-            cur = self._osmo.last_attitude.pitch_deg
-            err = target_pitch_deg - cur
+            now = time.monotonic()
+            dt = max(0.0, min(0.15, now - last_t))
+            last_t = now
+
+            att = self._osmo.last_attitude
+            if att.updated_at != last_imu_ts:
+                # Fresh 1 Hz IMU packet arrived -> snap estimate to ground truth & check divergence
+                last_imu_ts = att.updated_at
+                est_pitch = att.pitch_deg
+                real_err = abs(target_pitch_deg - est_pitch)
+                if real_err < best_err:
+                    best_err = real_err
+                elif real_err > best_err + 4.0 and not flipped:
+                    sign_for_pos_err = -sign_for_pos_err
+                    best_err = real_err
+                    flipped = True
+                    self.arbiter.log("ARM", f"Correction auto sens Pitch (cur={est_pitch:+.1f}° → cible={target_pitch_deg:+.1f}°)")
+
+            err = target_pitch_deg - est_pitch
             abs_err = abs(err)
-            if abs_err <= 2.2:
+            if abs_err <= 2.5:
                 break
 
-            if abs_err < best_err:
-                best_err = abs_err
-            elif (time.monotonic() - t_start) > 0.45 and abs_err > best_err + 2.5 and not flipped:
-                # Continuous self-correction: if moving away from target_pitch_deg, invert immediately!
-                sign_for_pos_err = -sign_for_pos_err
-                best_err = abs_err
-                flipped = True
-                self.arbiter.log("ARM", f"Correction auto sens Pitch (cur={cur:+.1f}° → cible={target_pitch_deg:+.1f}°)")
-
             cmd_dir = sign_for_pos_err if err > 0 else -sign_for_pos_err
-            spd = max(18.0, min(68.0, abs_err * 2.5))
+            spd = max(18.0, min(68.0, abs_err * 2.4))
             await self._send_body_speed(0.0, cmd_dir * spd)
+            # Dead-reckon pitch between 1 Hz IMU packets (negative body tilt increases pitch)
+            est_pitch += (-cmd_dir * spd * 0.72) * dt
             await asyncio.sleep(0.05)
 
         await self._send_body_speed(0.0, 0.0)
         return self._osmo.last_attitude.pitch_deg
 
-    async def _pivot_pan_relative_quat(self, target_deg: float = 180.0, timeout_s: float = 5.5) -> float:
-        """Rotate horizontal Pan LEFT (default desk direction) by target_deg (~180°) using 3D quaternion geodesic.
+    async def _pivot_pan_relative_quat(
+        self,
+        target_deg: float = 155.0,
+        timeout_s: float = 4.5,
+        *,
+        allow_reverse: bool = False,
+    ) -> float:
+        """Rotate horizontal Pan LEFT (default desk direction) using OM3's 1 Hz quaternion IMU + dead-reckoning.
 
-        Empirically verified on Zach's setup (Osmo to the right of head, sheet in front of head):
-        - direction = +1.0 rotates LEFT toward the desk sheet.
-        - Grace period of 0.95s prevents false 0° stall triggers during motor spin-up.
-        - If the left mechanical hardstop is reached after turning >= 80° LEFT, stops cleanly THERE ("à fond à gauche")
-          instead of reversing toward the right wall!
+        Key insight discovered from Flight Recorder (imu_trace.jsonl):
+        - OM3 sends IMU quaternion updates at ~1 Hz (every ~1.0s).
+        - Previously, a 0.45s stall timeout fired BEFORE the 2nd 1 Hz IMU packet arrived, causing a false reversal to the RIGHT!
+        - Fix: only detect a mechanical endstop when 2 CONSECUTIVE fresh IMU packets show < 2° progress,
+          and interpolate angle between 1 Hz packets so we stop crisply at target_deg on the LEFT!
         """
         if not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
             return 0.0
@@ -322,95 +339,110 @@ class StudioRuntime:
             await self.arbiter.move_relative_deg(target_deg, 0.0, speed_dps=75.0, hold_after=True)
             return target_deg
 
-        stop_deg = max(30.0, min(176.0, float(target_deg) - 4.0))
-        direction = +1.0  # ALWAYS start LEFT toward the sheet in front of the user's head
+        stop_deg = max(30.0, min(174.0, float(target_deg) - 4.0))
+        direction = +1.0  # ALWAYS LEFT toward the sheet in front of Zach's head
         flipped = False
-        stall_since: float | None = None
-        last_turned = 0.0
-        turned = 0.0
-        t_start = time.monotonic()
-        deadline = t_start + timeout_s
+        last_imu_ts = self._osmo.last_attitude.updated_at
+        last_imu_turned = 0.0
+        est_turned = 0.0
+        stalled_packets = 0
+        last_t = time.monotonic()
+        deadline = last_t + timeout_s
 
         while time.monotonic() < deadline and self.osmo_connected:
+            now = time.monotonic()
+            dt = max(0.0, min(0.15, now - last_t))
+            last_t = now
+
             att = self._osmo.last_attitude
             if att is None or att.quat is None:
                 await asyncio.sleep(0.05)
                 continue
-            turned = quat_angle_deg(q_start, att.quat)
-            if turned >= stop_deg:
-                break
 
-            remaining = max(0.0, target_deg - turned)
-            spd = max(24.0, min(88.0, remaining * 2.4))
-            await self._send_body_speed(direction * spd, 0.0)
-            await asyncio.sleep(0.05)
+            if att.updated_at != last_imu_ts:
+                # Fresh 1 Hz IMU packet!
+                last_imu_ts = att.updated_at
+                real_turned = quat_angle_deg(q_start, att.quat)
+                progress = abs(real_turned - last_imu_turned)
+                est_turned = real_turned
+                if progress < 2.5 and real_turned > 10.0:
+                    stalled_packets += 1
+                else:
+                    stalled_packets = 0
+                last_imu_turned = real_turned
 
-            elapsed = time.monotonic() - t_start
-            if elapsed > 0.95 and abs(turned - last_turned) < 0.6 and spd >= 40.0:
-                if stall_since is None:
-                    stall_since = time.monotonic()
-                elif time.monotonic() - stall_since > 0.45:
-                    if turned >= 80.0:
-                        # Reached full-left mechanical endstop ("à fond vers la gauche") -> stop cleanly here!
-                        self.arbiter.log("ARM", f"Position à fond à gauche atteinte (ΔPan={turned:.0f}°)")
+                if stalled_packets >= 2:
+                    if real_turned >= 60.0 or not allow_reverse:
+                        self.arbiter.log("ARM", f"Butée gauche atteinte proprement (ΔPan={real_turned:.0f}°)")
                         break
                     if not flipped:
                         direction = -direction
                         flipped = True
-                        stall_since = None
-                        t_start = time.monotonic()
-                        self.arbiter.log("ARM", f"Butée Pan précoce à {turned:.0f}° → contournement côté libre")
-            else:
-                stall_since = None
-            last_turned = turned
+                        stalled_packets = 0
+                        self.arbiter.log("ARM", f"Butée Pan à {real_turned:.0f}° → contournement côté libre")
+
+            if est_turned >= stop_deg:
+                break
+
+            remaining = max(0.0, target_deg - est_turned)
+            spd = max(24.0, min(88.0, remaining * 2.2))
+            await self._send_body_speed(direction * spd, 0.0)
+            # Dead-reckon pan angle between 1 Hz IMU packets (empirical gain ~0.85)
+            est_turned += spd * 0.85 * dt
+            await asyncio.sleep(0.05)
 
         await self._send_body_speed(0.0, 0.0)
         self._last_pivot_dir = direction
-        return round(turned, 1)
+        return round(est_turned, 1)
 
     async def _pivot_pan_back_to_quat(
         self,
         target_quat: tuple[float, float, float, float],
-        timeout_s: float = 5.0,
+        timeout_s: float = 4.5,
     ) -> float:
-        """Unwind horizontal Pan in reverse direction back to saved head quaternion."""
+        """Unwind horizontal Pan in reverse direction back to saved head quaternion (1 Hz IMU safe)."""
         if not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
             return 0.0
         direction = -(self._last_pivot_dir or 1.0)
-        flipped = False
-        stall_since: float | None = None
-        last_dist = 180.0
-        dist = 180.0
-        t_start = time.monotonic()
-        deadline = t_start + timeout_s
+        last_imu_ts = self._osmo.last_attitude.updated_at
+        est_dist = quat_angle_deg(target_quat, self._osmo.last_attitude.quat) if self._osmo.last_attitude.quat else 150.0
+        last_imu_dist = est_dist
+        stalled_packets = 0
+        last_t = time.monotonic()
+        deadline = last_t + timeout_s
 
         while time.monotonic() < deadline and self.osmo_connected:
+            now = time.monotonic()
+            dt = max(0.0, min(0.15, now - last_t))
+            last_t = now
+
             att = self._osmo.last_attitude
             if att is None or att.quat is None:
                 await asyncio.sleep(0.05)
                 continue
-            dist = quat_angle_deg(target_quat, att.quat)
-            if dist <= 8.0:
+
+            if att.updated_at != last_imu_ts:
+                last_imu_ts = att.updated_at
+                real_dist = quat_angle_deg(target_quat, att.quat)
+                if abs(real_dist - last_imu_dist) < 2.5:
+                    stalled_packets += 1
+                else:
+                    stalled_packets = 0
+                last_imu_dist = real_dist
+                est_dist = real_dist
+                if stalled_packets >= 2:
+                    break
+
+            if est_dist <= 8.0:
                 break
 
-            spd = max(22.0, min(88.0, dist * 2.4))
+            spd = max(22.0, min(88.0, est_dist * 2.2))
             await self._send_body_speed(direction * spd, 0.0)
+            est_dist = max(0.0, est_dist - spd * 0.85 * dt)
             await asyncio.sleep(0.05)
 
-            if (time.monotonic() - t_start) > 0.95 and abs(dist - last_dist) < 0.6 and spd >= 40.0:
-                if stall_since is None:
-                    stall_since = time.monotonic()
-                elif time.monotonic() - stall_since > 0.45 and not flipped:
-                    direction = -direction
-                    flipped = True
-                    stall_since = None
-                    t_start = time.monotonic()
-            else:
-                stall_since = None
-            last_dist = dist
-
         await self._send_body_speed(0.0, 0.0)
-        return round(dist, 1)
+        return round(est_dist, 1)
 
     async def _servo_pan_to_imu(self, target_roll_deg: float, timeout_s: float = 4.2) -> float | None:
         """Closed-loop IMU horizontal pan servo on OM3's true pan axis (att.roll_deg).

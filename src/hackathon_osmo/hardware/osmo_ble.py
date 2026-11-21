@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import math
 import struct
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Callable
 
 from bleak import BleakClient, BleakScanner
@@ -33,6 +34,7 @@ class GimbalAttitude:
     roll_deg: float
     yaw_deg: float
     quat: tuple[float, float, float, float] | None = None  # normalized (qw, qx, qy, qz)
+    updated_at: float = field(default_factory=time.monotonic)
 
 
 def quat_angle_deg(
