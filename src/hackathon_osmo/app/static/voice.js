@@ -52,6 +52,13 @@ function renderVoiceState(voice) {
   const btnVision = document.getElementById('btn-vision');
   if (btnVision) btnVision.className = voice.use_vision ? 'active' : '';
 
+  const btnLang = document.getElementById('btn-lang');
+  if (btnLang && voice.language) {
+    const isFr = voice.language === 'fr';
+    btnLang.textContent = isFr ? 'LANG : FR' : 'LANG : EN';
+    btnLang.className = isFr ? 'live-on' : 'active';
+  }
+
   const lbl = document.getElementById('lbl-voice-status');
   if (!textBusy) {
     if (!voice.ready) {
@@ -100,6 +107,22 @@ function updateVoiceCfg() {
 function toggleVision() {
   if (!state || !state.voice) return;
   send({ action: 'voice_config', use_vision: !state.voice.use_vision });
+}
+
+async function toggleLanguage() {
+  const cur = (state && state.voice && state.voice.language) ? state.voice.language : 'en';
+  const next = cur === 'fr' ? 'en' : 'fr';
+  send({ action: 'voice_config', language: next });
+  const btnLang = document.getElementById('btn-lang');
+  if (btnLang) {
+    btnLang.textContent = next === 'fr' ? 'LANG : FR' : 'LANG : EN';
+    btnLang.className = next === 'fr' ? 'live-on' : 'active';
+  }
+  // If a GPT-Live WebRTC session is already running, cleanly reconnect so the voice frontend switches 100% immediately!
+  if (liveActive) {
+    await stopLiveCall();
+    setTimeout(() => { startLiveCall(); }, 180);
+  }
 }
 
 function startVuLoop(stream) {

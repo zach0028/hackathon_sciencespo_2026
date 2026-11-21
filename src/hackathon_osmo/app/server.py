@@ -313,6 +313,13 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 if "voice" in msg:
                     runtime.brain.voice = str(msg["voice"])
                     runtime.arbiter.log("LIVE", f"Voix GPT-Live : {runtime.brain.voice} (actif au prochain appel)")
+                if "language" in msg and str(msg["language"]) in ("en", "fr"):
+                    lang = str(msg["language"])
+                    await runtime.brain.set_language(lang)
+                    runtime.arbiter.log(
+                        "LIVE",
+                        "Mode langue Osmo : FULL FRANÇAIS" if lang == "fr" else "Mode langue Osmo : FULL ENGLISH",
+                    )
                 if "use_vision" in msg:
                     runtime.brain.use_vision = bool(msg["use_vision"])
                 if msg.get("clear_history"):

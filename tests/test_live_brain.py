@@ -245,7 +245,20 @@ def test_infer_micro_expression_and_realtime_sideband_auto_express() -> None:
     assert infer_micro_expression("Hello everyone! Nice to meet you.") == ("nod_yes", "yes")
     assert infer_micro_expression("Not quite, watch the minus sign.") == ("shake_no", "no")
     assert infer_micro_expression("What do you think we should try next?", final=True) == ("curious_tilt", "curious")
+    assert infer_micro_expression("Oui, exactement ! Bravo.") == ("nod_yes", "yes")
+    assert infer_micro_expression("Pas tout à fait, attention au signe.") == ("shake_no", "no")
+    assert infer_micro_expression("Intéressant, on essaie ensemble ?", final=True) == ("curious_tilt", "curious")
     assert infer_micro_expression("Heat flows from warm skin to fabric.", final=True) is None
+
+    # Language switch toggles between full English and full French instructions cleanly
+    b_lang = OpenAILiveBrain()
+    assert b_lang.language == "en"
+    assert "ENGLISH ONLY" in b_lang.live_instructions()
+    assert "ENGLISH ONLY" in b_lang.brain_instructions()
+    asyncio.run(b_lang.set_language("fr"))
+    assert b_lang.language == "fr"
+    assert "FRANÇAIS UNIQUEMENT" in b_lang.live_instructions()
+    assert "FRANÇAIS CLAIR" in b_lang.brain_instructions()
 
     fired: list[tuple[str, str]] = []
     brain = OpenAILiveBrain(on_auto_express=lambda g, l: fired.append((g, l)))

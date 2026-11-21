@@ -1197,7 +1197,11 @@ class StudioRuntime:
             if not read_now:
                 # Instant 1-hop reposition back to sheet after "Got it / I noted it" (0ms Round-2 wait!)
                 res.pop("_images", None)
-                res["_spoken_override"] = "I'm back on your sheet, Zach. Point or ask whenever you're ready."
+                res["_spoken_override"] = (
+                    "Je suis de retour sur ta feuille, Zach. Montre ou demande quand tu es prêt."
+                    if self.brain.language == "fr"
+                    else "I'm back on your sheet, Zach. Point or ask whenever you're ready."
+                )
             return res
 
         # --- 3. move_arm (relative pan/tilt OR panoramic 3-photo room scan) ---
@@ -1865,6 +1869,7 @@ class StudioRuntime:
                 "brain_model": self.brain.brain_model,
                 "reasoning_effort": self.brain.reasoning_effort,
                 "voice": self.brain.voice,
+                "language": self.brain.language,
                 "use_vision": self.brain.use_vision,
                 "last_brain_ms": self.brain.last_brain_ms,
                 "models": BRAIN_MODELS,

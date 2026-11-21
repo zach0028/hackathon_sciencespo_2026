@@ -501,7 +501,7 @@
       const txt = String(it.text || "").trim();
       if (!txt) return;
       if (mode === "exercise" || mode === "exam") {
-        const mGiven = txt.match(/^(?:given|data|context|values|time)\s*[:—-]\s*(.+)$/i);
+        const mGiven = txt.match(/^(?:given|data|context|values|time|donn[ée]es?|contexte)\s*[:—-]\s*(.+)$/i);
         if (mGiven) {
           givenParts.push(mGiven[1].trim());
           return;
@@ -527,13 +527,13 @@
       if (mode === "checklist") {
         tag = row.done ? "[✓]" : "[ ]";
       } else if (mode === "definition") {
-        const mDef = bodyText.match(/^(definition|def|formula|equation|example|ex|trap|watch out|key)\s*[:—-]\s*(.+)$/i);
+        const mDef = bodyText.match(/^(d[ée]finition|definition|def|formule|formula|equation|exemple|example|ex|pi[èe]ge|trap|watch out|cl[ée]|key)\s*[:—-]\s*(.+)$/i);
         if (mDef) {
           const lbl = mDef[1].toUpperCase();
           tag = lbl === "DEF" ? "DEF" : lbl.startsWith("WATCH") ? "TRAP" : lbl;
           bodyText = mDef[2].trim();
-          if (tag === "DEF" || tag === "DEFINITION") { tag = "DEF"; extraCls = "def-hero"; }
-          else if (tag === "TRAP") extraCls = "def-trap";
+          if (tag === "DEF" || tag === "DEFINITION" || tag === "DÉFINITION") { tag = "DEF"; extraCls = "def-hero"; }
+          else if (tag === "TRAP" || tag === "PIÈGE" || tag === "PIEGE") extraCls = "def-trap";
         } else if (rowIdx === 0) {
           tag = "DEF";
           extraCls = "def-hero";
