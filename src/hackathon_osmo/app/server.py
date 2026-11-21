@@ -86,10 +86,16 @@ async def api_launch_pixel_face(port: int = 8765) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "Aucun Pixel connecté en ADB"}, status_code=400)
 
     url = f"http://127.0.0.1:{int(port)}/face?v={UI_VERSION}"
+    all_serials = [d.serial for d in list_adb_devices() if d.state == "device"]
+    if serial not in all_serials:
+        all_serials.insert(0, serial)
 
-    def _launch_sync() -> None:
-        subprocess.run([adb, "-s", serial, "reverse", f"tcp:{int(port)}", f"tcp:{int(port)}"], check=True, capture_output=True)
-        # Demo-ready display prep: keep screen awake 30 min (even on battery) + lock Landscape orientation
+    def _launch_sync() -> str:
+        # Expose Studio over adb reverse on EVERY connected Pixel transport (USB + Wi-Fi!)
+        for s in all_serials:
+            subprocess.run([adb, "-s", s, "reverse", f"tcp:{int(port)}", f"tcp:{int(port)}"], check=False, capture_output=True)
+        # Demo-ready display prep: wake screen + keep awake 30 min + lock Landscape orientation
+        subprocess.run([adb, "-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"], check=False, capture_output=True)
         subprocess.run(
             [adb, "-s", serial, "shell", "settings", "put", "system", "screen_off_timeout", "1800000"],
             check=False,
@@ -105,16 +111,31 @@ async def api_launch_pixel_face(port: int = 8765) -> JSONResponse:
             check=False,
             capture_output=True,
         )
+        # Prefer native fullscreen locked-landscape OsmoFace kiosk app if installed, else Chrome fallback
+        pkg_check = subprocess.run(
+            [adb, "-s", serial, "shell", "pm", "path", "com.osmo.face"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if pkg_check.returncode == 0 and "package:" in (pkg_check.stdout or ""):
+            subprocess.run(
+                [adb, "-s", serial, "shell", "am", "start", "-W", "-n", "com.osmo.face/.MainActivity", "--es", "url", url],
+                check=True,
+                capture_output=True,
+            )
+            return "native_app"
         subprocess.run(
             [adb, "-s", serial, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url],
             check=True,
             capture_output=True,
         )
+        return "browser"
 
     try:
-        await asyncio.to_thread(_launch_sync)
-        runtime.arbiter.log("PIXEL", f"Interface OLED /face lancée sur Pixel ({serial}) via adb reverse")
-        return JSONResponse({"ok": True, "serial": serial, "url": url})
+        launcher = await asyncio.to_thread(_launch_sync)
+        runtime.arbiter.log("PIXEL", f"Interface OLED /face lancée sur Pixel ({serial}, mode={launcher})")
+        return JSONResponse({"ok": True, "serial": serial, "url": url, "launcher": launcher})
     except Exception as exc:
         runtime.arbiter.log("PIXEL", f"Erreur lancement /face sur Pixel : {exc}")
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
