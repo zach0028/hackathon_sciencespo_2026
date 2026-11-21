@@ -255,59 +255,74 @@ class StudioRuntime:
         self.osmo_tx_packets += 1
         self.osmo_last_tx = f"imu-servo mY={m_yaw:+.1f} mP={m_pitch:+.1f}"
 
-    async def _servo_pitch_to_imu(self, target_pitch_deg: float, timeout_s: float = 3.2) -> float | None:
-        """Closed-loop IMU pitch servo: auto-verifies motor sign so it can NEVER tilt toward the ceiling."""
+    async def _servo_pitch_to_imu(self, target_pitch_deg: float, timeout_s: float = 3.8) -> float | None:
+        """Closed-loop IMU pitch servo with continuous divergence guard (NEVER tilts toward ceiling).
+
+        Empirically verified on Pixel 11 Pro + OM3:
+        - Negative body tilt_dps raises IMU pitch toward +49.3° (rear camera pointing DOWN at desk).
+        - Positive body tilt_dps lowers IMU pitch toward 0° / -30° (rear camera pointing UP at ceiling).
+        """
         if not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
             return None
         cur = self._osmo.last_attitude.pitch_deg
         if abs(target_pitch_deg - cur) <= 2.5:
             return cur
 
-        # Probe direction briefly to confirm real IMU sign
-        sign = 1.0 if target_pitch_deg > cur else -1.0
-        probe_start = cur
-        for _ in range(4):
-            await self._send_body_speed(0.0, sign * 38.0)
-            await asyncio.sleep(0.05)
-        cur_after = self._osmo.last_attitude.pitch_deg
-        if abs(target_pitch_deg - cur_after) > abs(target_pitch_deg - probe_start) + 0.6:
-            sign = -sign
+        # Verified polarity: increasing IMU pitch (e.g. 0° -> +49.3° desk) needs negative body tilt_dps
+        sign_for_pos_err = -1.0
+        best_err = abs(target_pitch_deg - cur)
+        t_start = time.monotonic()
+        flipped = False
+        deadline = t_start + timeout_s
 
-        deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline and self.osmo_connected:
             cur = self._osmo.last_attitude.pitch_deg
             err = target_pitch_deg - cur
-            if abs(err) <= 2.2:
+            abs_err = abs(err)
+            if abs_err <= 2.2:
                 break
-            desired_dir = sign if (err > 0) == (target_pitch_deg > probe_start) else -sign
-            spd = max(18.0, min(68.0, abs(err) * 2.6))
-            await self._send_body_speed(0.0, desired_dir * spd)
+
+            if abs_err < best_err:
+                best_err = abs_err
+            elif (time.monotonic() - t_start) > 0.45 and abs_err > best_err + 2.5 and not flipped:
+                # Continuous self-correction: if moving away from target_pitch_deg, invert immediately!
+                sign_for_pos_err = -sign_for_pos_err
+                best_err = abs_err
+                flipped = True
+                self.arbiter.log("ARM", f"Correction auto sens Pitch (cur={cur:+.1f}° → cible={target_pitch_deg:+.1f}°)")
+
+            cmd_dir = sign_for_pos_err if err > 0 else -sign_for_pos_err
+            spd = max(18.0, min(68.0, abs_err * 2.5))
+            await self._send_body_speed(0.0, cmd_dir * spd)
             await asyncio.sleep(0.05)
 
         await self._send_body_speed(0.0, 0.0)
         return self._osmo.last_attitude.pitch_deg
 
     async def _pivot_pan_relative_quat(self, target_deg: float = 180.0, timeout_s: float = 5.5) -> float:
-        """Rotate horizontal Pan by target_deg (~180°) relative to current head orientation using 3D quaternion geodesic.
+        """Rotate horizontal Pan LEFT (default desk direction) by target_deg (~180°) using 3D quaternion geodesic.
 
-        100% immune to Euler axis coupling or tripod orientation: wherever the user's head is right now,
-        the rear camera lands directly aligned with the sheet in front of the user's head!
+        Empirically verified on Zach's setup (Osmo to the right of head, sheet in front of head):
+        - direction = +1.0 rotates LEFT toward the desk sheet.
+        - Grace period of 0.95s prevents false 0° stall triggers during motor spin-up.
+        - If the left mechanical hardstop is reached after turning >= 80° LEFT, stops cleanly THERE ("à fond à gauche")
+          instead of reversing toward the right wall!
         """
         if not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
             return 0.0
         q_start = self._osmo.last_attitude.quat
         if q_start is None:
-            # Fallback if only Euler packet available
             await self.arbiter.move_relative_deg(target_deg, 0.0, speed_dps=75.0, hold_after=True)
             return target_deg
 
         stop_deg = max(30.0, min(176.0, float(target_deg) - 4.0))
-        direction = self._last_pivot_dir or 1.0
+        direction = +1.0  # ALWAYS start LEFT toward the sheet in front of the user's head
         flipped = False
         stall_since: float | None = None
         last_turned = 0.0
         turned = 0.0
-        deadline = time.monotonic() + timeout_s
+        t_start = time.monotonic()
+        deadline = t_start + timeout_s
 
         while time.monotonic() < deadline and self.osmo_connected:
             att = self._osmo.last_attitude
@@ -323,14 +338,21 @@ class StudioRuntime:
             await self._send_body_speed(direction * spd, 0.0)
             await asyncio.sleep(0.05)
 
-            if abs(turned - last_turned) < 0.7 and spd >= 40.0:
+            elapsed = time.monotonic() - t_start
+            if elapsed > 0.95 and abs(turned - last_turned) < 0.6 and spd >= 40.0:
                 if stall_since is None:
                     stall_since = time.monotonic()
-                elif time.monotonic() - stall_since > 0.36 and not flipped:
-                    direction = -direction
-                    flipped = True
-                    stall_since = None
-                    self.arbiter.log("ARM", f"Butée Pan atteinte à {turned:.0f}° → demi-tour par le côté libre")
+                elif time.monotonic() - stall_since > 0.45:
+                    if turned >= 80.0:
+                        # Reached full-left mechanical endstop ("à fond vers la gauche") -> stop cleanly here!
+                        self.arbiter.log("ARM", f"Position à fond à gauche atteinte (ΔPan={turned:.0f}°)")
+                        break
+                    if not flipped:
+                        direction = -direction
+                        flipped = True
+                        stall_since = None
+                        t_start = time.monotonic()
+                        self.arbiter.log("ARM", f"Butée Pan précoce à {turned:.0f}° → contournement côté libre")
             else:
                 stall_since = None
             last_turned = turned
@@ -352,7 +374,8 @@ class StudioRuntime:
         stall_since: float | None = None
         last_dist = 180.0
         dist = 180.0
-        deadline = time.monotonic() + timeout_s
+        t_start = time.monotonic()
+        deadline = t_start + timeout_s
 
         while time.monotonic() < deadline and self.osmo_connected:
             att = self._osmo.last_attitude
@@ -367,13 +390,14 @@ class StudioRuntime:
             await self._send_body_speed(direction * spd, 0.0)
             await asyncio.sleep(0.05)
 
-            if abs(dist - last_dist) < 0.7 and spd >= 40.0:
+            if (time.monotonic() - t_start) > 0.95 and abs(dist - last_dist) < 0.6 and spd >= 40.0:
                 if stall_since is None:
                     stall_since = time.monotonic()
-                elif time.monotonic() - stall_since > 0.36 and not flipped:
+                elif time.monotonic() - stall_since > 0.45 and not flipped:
                     direction = -direction
                     flipped = True
                     stall_since = None
+                    t_start = time.monotonic()
             else:
                 stall_since = None
             last_dist = dist
