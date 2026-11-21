@@ -1,50 +1,64 @@
-/* Voice Companion: Native 16 kHz PCM WAV Capture (Safari/Chrome/Arc safe) + Push-to-Talk + Auto-VAD */
+/* OpenAI GPT-Live 1.1 WebRTC Full-Duplex Client + Delegated GPT-6.2 Astra Brain UI */
 
+let peerConn = null;
+let dataChannel = null;
 let micStream = null;
 let audioCtx = null;
 let analyser = null;
-let pcmNode = null;
-let isRecording = false;
-let pcmBuffers = [];
-let pttActive = false;
-let handsFree = false;
-let vadSpeaking = false;
-let vadSilenceSince = 0;
-let voiceBusyLocal = false;
-let robotSpeaking = false;
-let serverSpeaking = false;
-let vadLoopId = null;
+let vuLoopId = null;
+let liveActive = false;
+let micMuted = false;
+let textBusy = false;
 
 function renderVoiceState(voice) {
-  document.getElementById('sel-model').value = voice.model;
-  document.getElementById('sel-voice').value = voice.voice_id;
-  document.getElementById('btn-vision').className = voice.use_vision ? 'active' : '';
-  const btnOut = document.getElementById('btn-out');
-  btnOut.textContent = voice.audio_output === 'mac' ? '🔈 Sortie : MacBook' : '🔈 Sortie : Navigateur';
-  btnOut.className = 'active';
-  serverSpeaking = !!voice.speaking;
+  const selModel = document.getElementById('sel-model');
+  const selEffort = document.getElementById('sel-effort');
+  const selVoice = document.getElementById('sel-voice');
+  if (selModel && voice.brain_model) selModel.value = voice.brain_model;
+  if (selEffort && voice.reasoning_effort) selEffort.value = voice.reasoning_effort;
+  if (selVoice && voice.voice) selVoice.value = voice.voice;
 
-  if (!voiceBusyLocal) {
-    document.getElementById('lbl-voice-status').textContent = voice.ready
-      ? (voice.speaking ? '🗣️ Osmo parle...' : (voice.busy ? '🧠 Réflexion...' : (handsFree ? '🔊 Écoute auto active' : '✅ Prêt')))
-      : '⚠️ Clés API manquantes';
+  const btnVision = document.getElementById('btn-vision');
+  if (btnVision) btnVision.className = voice.use_vision ? 'active' : '';
+
+  const lbl = document.getElementById('lbl-voice-status');
+  if (!textBusy) {
+    if (!voice.ready) {
+      lbl.textContent = '⚠️ OPENAI_API_KEY manquante';
+    } else if (voice.busy) {
+      lbl.textContent = `🧠 ${voice.brain_model} (${voice.reasoning_effort})...`;
+    } else if (voice.speaking) {
+      lbl.textContent = '🗣️ Osmo parle (full-duplex)';
+    } else if (liveActive && voice.sideband_connected) {
+      lbl.textContent = micMuted ? '🔇 Live actif (micro muet)' : '🟢 GPT-Live 1.1 + Sideband actifs';
+    } else if (liveActive) {
+      lbl.textContent = '🟡 WebRTC connecté (sideband...)';
+    } else {
+      lbl.textContent = '✅ Prêt (OpenAI direct)';
+    }
   }
+
   if (voice.transcript && voice.transcript.length > 0) {
-    document.getElementById('chat-box').innerHTML = voice.transcript.map(t => `
-      <div class="chat-turn">
-        <div class="chat-user"><b>Zach</b> (${t.ts}) : ${escapeHtml(t.user)}</div>
-        <div class="chat-bot"><b>Osmo</b> : ${escapeHtml(t.reply)}</div>
-        <div class="chat-meta">geste=${t.gesture || '—'} · led=${t.led || '—'} · STT ${t.stt_ms}ms · LLM ${t.llm_ms}ms · TTS ${t.tts_ms}ms</div>
-      </div>
-    `).join('');
+    document.getElementById('chat-box').innerHTML = voice.transcript.map(t => {
+      const toolsStr = (t.tools && t.tools.length) ? t.tools.join(', ') : '—';
+      const msStr = t.brain_ms ? `${t.brain_ms}ms` : 'live';
+      return `
+        <div class="chat-turn">
+          <div class="chat-user"><b>Zach</b> (${t.ts}) : ${escapeHtml(t.user || '')}</div>
+          <div class="chat-bot"><b>Osmo</b> : ${escapeHtml(t.reply || '…')}</div>
+          <div class="chat-meta">${escapeHtml(t.model || '')} · outils=${escapeHtml(toolsStr)} · ${msStr}</div>
+        </div>
+      `;
+    }).join('');
   }
 }
 
 function updateVoiceCfg() {
   send({
     action: 'voice_config',
-    model: document.getElementById('sel-model').value,
-    voice_id: document.getElementById('sel-voice').value,
+    brain_model: document.getElementById('sel-model').value,
+    reasoning_effort: document.getElementById('sel-effort').value,
+    voice: document.getElementById('sel-voice').value,
   });
 }
 
@@ -53,194 +67,202 @@ function toggleVision() {
   send({ action: 'voice_config', use_vision: !state.voice.use_vision });
 }
 
-function toggleAudioOut() {
-  if (!state || !state.voice) return;
-  const next = state.voice.audio_output === 'mac' ? 'browser' : 'mac';
-  send({ action: 'voice_config', audio_output: next });
-}
-
-function encodeWav16k(chunks, inputRate) {
-  let totalLen = 0;
-  for (const c of chunks) totalLen += c.length;
-  const merged = new Float32Array(totalLen);
-  let off = 0;
-  for (const c of chunks) { merged.set(c, off); off += c.length; }
-
-  const targetRate = 16000;
-  const ratio = inputRate / targetRate;
-  const outLen = Math.max(1, Math.floor(merged.length / ratio));
-  const pcm = new Int16Array(outLen);
-  for (let i = 0; i < outLen; i++) {
-    const idx = Math.min(merged.length - 1, Math.floor(i * ratio));
-    const s = Math.max(-1, Math.min(1, merged[idx]));
-    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-  }
-
-  const buf = new ArrayBuffer(44 + pcm.byteLength);
-  const v = new DataView(buf);
-  const writeStr = (pos, str) => { for (let i = 0; i < str.length; i++) v.setUint8(pos + i, str.charCodeAt(i)); };
-  writeStr(0, 'RIFF');
-  v.setUint32(4, 36 + pcm.byteLength, true);
-  writeStr(8, 'WAVE');
-  writeStr(12, 'fmt ');
-  v.setUint32(16, 16, true);
-  v.setUint16(20, 1, true);
-  v.setUint16(22, 1, true);
-  v.setUint32(24, targetRate, true);
-  v.setUint32(28, targetRate * 2, true);
-  v.setUint16(32, 2, true);
-  v.setUint16(34, 16, true);
-  writeStr(36, 'data');
-  v.setUint32(40, pcm.byteLength, true);
-  new Int16Array(buf, 44).set(pcm);
-  return new Blob([buf], { type: 'audio/wav' });
-}
-
-async function ensureMic() {
-  if (micStream && audioCtx) {
-    if (audioCtx.state === 'suspended') await audioCtx.resume();
-    return micStream;
-  }
-  micStream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-  });
+function startVuLoop(stream) {
+  if (vuLoopId) cancelAnimationFrame(vuLoopId);
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  const src = audioCtx.createMediaStreamSource(micStream);
+  const src = audioCtx.createMediaStreamSource(stream);
   analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 512;
+  analyser.fftSize = 256;
   src.connect(analyser);
 
-  pcmNode = audioCtx.createScriptProcessor(4096, 1, 1);
-  pcmNode.onaudioprocess = (ev) => {
-    if (!isRecording) return;
-    pcmBuffers.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
-  };
-  src.connect(pcmNode);
-  pcmNode.connect(audioCtx.destination);
-  startVuLoop();
-  return micStream;
-}
-
-function getMicRms() {
-  if (!analyser) return 0;
   const buf = new Uint8Array(analyser.fftSize);
-  analyser.getByteTimeDomainData(buf);
-  let sum = 0;
-  for (let i = 0; i < buf.length; i++) {
-    const v = (buf[i] - 128) / 128;
-    sum += v * v;
-  }
-  return Math.sqrt(sum / buf.length);
-}
-
-function startVuLoop() {
-  if (vadLoopId) return;
   const tick = () => {
-    const rms = getMicRms();
-    document.getElementById('vu-fill').style.width = Math.min(100, Math.round(rms * 420)) + '%';
-
-    if (handsFree && !voiceBusyLocal && !robotSpeaking && !serverSpeaking) {
-      const now = performance.now();
-      const THRESH = 0.030;
-      if (rms > THRESH) {
-        vadSilenceSince = 0;
-        if (!vadSpeaking) {
-          vadSpeaking = true;
-          beginRecording();
-          document.getElementById('lbl-voice-status').textContent = '🎙️ Voix détectée...';
-        }
-      } else if (vadSpeaking) {
-        if (!vadSilenceSince) vadSilenceSince = now;
-        if (now - vadSilenceSince > 850) {
-          vadSpeaking = false;
-          vadSilenceSince = 0;
-          finishRecordingAndSend();
-        }
+    if (!analyser || !liveActive) {
+      document.getElementById('vu-fill').style.width = '0%';
+      return;
+    }
+    if (micMuted) {
+      document.getElementById('vu-fill').style.width = '0%';
+    } else {
+      analyser.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const v = (buf[i] - 128) / 128;
+        sum += v * v;
       }
+      const rms = Math.sqrt(sum / buf.length);
+      document.getElementById('vu-fill').style.width = Math.min(100, Math.round(rms * 420)) + '%';
     }
-    vadLoopId = requestAnimationFrame(tick);
+    vuLoopId = requestAnimationFrame(tick);
   };
-  vadLoopId = requestAnimationFrame(tick);
+  vuLoopId = requestAnimationFrame(tick);
 }
 
-function beginRecording() {
-  if (!audioCtx || isRecording) return;
-  pcmBuffers = [];
-  isRecording = true;
-  document.getElementById('btn-ptt').classList.add('recording');
+function waitIceComplete(pc, timeoutMs = 1500) {
+  if (pc.iceGatheringState === 'complete') return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    const onState = () => {
+      if (pc.iceGatheringState === 'complete') {
+        clearTimeout(timer);
+        pc.removeEventListener('icegatheringstatechange', onState);
+        resolve();
+      }
+    };
+    pc.addEventListener('icegatheringstatechange', onState);
+  });
 }
 
-async function finishRecordingAndSend() {
-  document.getElementById('btn-ptt').classList.remove('recording');
-  if (!isRecording) return;
-  isRecording = false;
-  if (!pcmBuffers.length || !audioCtx) return;
-
-  const wavBlob = encodeWav16k(pcmBuffers, audioCtx.sampleRate);
-  pcmBuffers = [];
-  if (wavBlob.size < 4000) return;
-
-  voiceBusyLocal = true;
-  document.getElementById('lbl-voice-status').textContent = '⏳ Voxtral STT → LLM → TTS...';
-  try {
-    const fd = new FormData();
-    fd.append('audio', wavBlob, 'speech.wav');
-    const resp = await fetch('/api/voice/audio', { method: 'POST', body: fd });
-    const data = await resp.json();
-    await playVoiceResponse(data);
-  } catch (e) {
-    document.getElementById('lbl-voice-status').textContent = '❌ Erreur : ' + e.message;
-  } finally {
-    voiceBusyLocal = false;
-  }
-}
-
-async function startPTT() {
-  if (pttActive || voiceBusyLocal) return;
-  pttActive = true;
-  try {
-    await ensureMic();
-    document.getElementById('lbl-voice-status').textContent = '🎙️ Enregistrement...';
-    beginRecording();
-  } catch (e) {
-    pttActive = false;
-    document.getElementById('lbl-voice-status').textContent = '❌ Micro refusé';
-  }
-}
-
-async function stopPTT() {
-  if (!pttActive) return;
-  pttActive = false;
-  await finishRecordingAndSend();
-}
-
-async function toggleHandsFree() {
-  handsFree = !handsFree;
-  const btn = document.getElementById('btn-vad');
-  btn.className = handsFree ? 'live-on' : '';
-  btn.textContent = handsFree ? '🔊 Mains libres : ACTIF' : '🔊 Mains libres (Auto)';
-  if (handsFree) {
-    try {
-      await ensureMic();
-      document.getElementById('lbl-voice-status').textContent = '🔊 Écoute auto active';
-    } catch (e) {
-      handsFree = false;
-      btn.className = '';
-      btn.textContent = '🔊 Mains libres (Auto)';
-    }
+async function toggleLiveCall() {
+  if (liveActive) {
+    await stopLiveCall();
   } else {
-    vadSpeaking = false;
-    isRecording = false;
+    await startLiveCall();
   }
+}
+
+async function startLiveCall() {
+  const btn = document.getElementById('btn-gpt-live');
+  const btnMute = document.getElementById('btn-mute');
+  const lbl = document.getElementById('lbl-voice-status');
+
+  btn.disabled = true;
+  lbl.textContent = '⏳ Connexion WebRTC GPT-Live 1.1...';
+
+  try {
+    // 1. Capture microphone with browser hardware Echo Cancellation (essential for full-duplex barge-in!)
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+      },
+    });
+    micMuted = false;
+
+    // 2. Create WebRTC peer connection + audio track + events data channel
+    peerConn = new RTCPeerConnection();
+    const audioEl = document.getElementById('live-audio');
+    peerConn.ontrack = (ev) => {
+      audioEl.srcObject = ev.streams[0];
+      audioEl.play().catch(() => {});
+    };
+    peerConn.onconnectionstatechange = () => {
+      if (!peerConn) return;
+      if (peerConn.connectionState === 'failed' || peerConn.connectionState === 'disconnected') {
+        lbl.textContent = '⚠️ WebRTC déconnecté';
+      }
+    };
+
+    for (const track of micStream.getAudioTracks()) {
+      peerConn.addTrack(track, micStream);
+    }
+
+    dataChannel = peerConn.createDataChannel('oai-events');
+    dataChannel.onmessage = (ev) => {
+      // Primary event stream (sideband on Python server handles delegation + tools securely)
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'error') {
+          lbl.textContent = '❌ Live: ' + (msg.error?.message || 'erreur');
+        }
+      } catch (_) {}
+    };
+
+    // 3. Generate SDP offer & negotiate via local FastAPI backend (keeps OPENAI_API_KEY server-side)
+    const offer = await peerConn.createOffer();
+    await peerConn.setLocalDescription(offer);
+    await waitIceComplete(peerConn, 1200);
+
+    const resp = await fetch('/api/live/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sdp: peerConn.localDescription.sdp }),
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error || !data.sdp) {
+      throw new Error(data.error || `HTTP ${resp.status}`);
+    }
+
+    await peerConn.setRemoteDescription({ type: 'answer', sdp: data.sdp });
+
+    liveActive = true;
+    startVuLoop(micStream);
+    btn.classList.add('recording');
+    btn.textContent = '⏹️ Raccrocher GPT-Live';
+    btnMute.disabled = false;
+    btnMute.textContent = '🔊 Micro actif';
+    btnMute.className = 'active';
+    lbl.textContent = '🟢 GPT-Live 1.1 connecté (parle librement !)';
+  } catch (err) {
+    lbl.textContent = '❌ ' + (err.message || err);
+    await stopLiveCall();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function stopLiveCall() {
+  liveActive = false;
+  micMuted = false;
+
+  if (vuLoopId) {
+    cancelAnimationFrame(vuLoopId);
+    vuLoopId = null;
+  }
+  if (dataChannel) {
+    try { dataChannel.close(); } catch (_) {}
+    dataChannel = null;
+  }
+  if (peerConn) {
+    try { peerConn.close(); } catch (_) {}
+    peerConn = null;
+  }
+  if (micStream) {
+    for (const t of micStream.getTracks()) t.stop();
+    micStream = null;
+  }
+  if (audioCtx) {
+    try { await audioCtx.close(); } catch (_) {}
+    audioCtx = null;
+    analyser = null;
+  }
+
+  const audioEl = document.getElementById('live-audio');
+  if (audioEl) audioEl.srcObject = null;
+
+  fetch('/api/live/stop', { method: 'POST' }).catch(() => {});
+
+  const btn = document.getElementById('btn-gpt-live');
+  const btnMute = document.getElementById('btn-mute');
+  btn.classList.remove('recording');
+  btn.textContent = '🎙️ Démarrer GPT-Live (Full-Duplex)';
+  btnMute.disabled = true;
+  btnMute.textContent = '🔊 Micro actif';
+  btnMute.className = '';
+  document.getElementById('vu-fill').style.width = '0%';
+}
+
+function toggleMicMute() {
+  if (!micStream || !liveActive) return;
+  micMuted = !micMuted;
+  for (const track of micStream.getAudioTracks()) {
+    track.enabled = !micMuted;
+  }
+  const btnMute = document.getElementById('btn-mute');
+  btnMute.textContent = micMuted ? '🔇 Micro muet' : '🔊 Micro actif';
+  btnMute.className = micMuted ? 'danger' : 'active';
 }
 
 async function sendTextTurn() {
   const inp = document.getElementById('txt-prompt');
   const txt = inp.value.trim();
-  if (!txt || voiceBusyLocal) return;
+  if (!txt || textBusy) return;
   inp.value = '';
-  voiceBusyLocal = true;
-  document.getElementById('lbl-voice-status').textContent = '🧠 LLM → Voxtral TTS...';
+  textBusy = true;
+  const lbl = document.getElementById('lbl-voice-status');
+  lbl.textContent = '🧠 Cerveau OpenAI + outils natifs...';
   try {
     const resp = await fetch('/api/voice/text', {
       method: 'POST',
@@ -248,48 +270,24 @@ async function sendTextTurn() {
       body: JSON.stringify({ text: txt }),
     });
     const data = await resp.json();
-    await playVoiceResponse(data);
+    if (!resp.ok || data.error) {
+      lbl.textContent = '❌ ' + (data.error || `HTTP ${resp.status}`);
+    } else {
+      lbl.textContent = `✅ Répondu en ${data.brain_ms || 0} ms`;
+    }
+  } catch (e) {
+    lbl.textContent = '❌ ' + e.message;
   } finally {
-    voiceBusyLocal = false;
-  }
-}
-
-async function playVoiceResponse(data) {
-  if (!data || data.error) {
-    document.getElementById('lbl-voice-status').textContent = data?.error ? '❌ ' + data.error : '✅ Prêt';
-    return;
-  }
-  if (data.played_on_mac) {
-    document.getElementById('lbl-voice-status').textContent = '🗣️ Osmo parle (MacBook)...';
-    return;
-  }
-  if (!data.audio_b64) {
-    document.getElementById('lbl-voice-status').textContent = '✅ Prêt';
-    return;
-  }
-  robotSpeaking = true;
-  document.getElementById('lbl-voice-status').textContent = '🗣️ Osmo parle...';
-  try {
-    const audio = new Audio(`data:${data.audio_mime || 'audio/wav'};base64,${data.audio_b64}`);
-    await new Promise((resolve) => {
-      audio.onended = resolve;
-      audio.onerror = resolve;
-      audio.play().catch(resolve);
-    });
-  } finally {
-    setTimeout(() => { robotSpeaking = false; }, 350);
+    textBusy = false;
   }
 }
 
 window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' && !e.repeat && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'SELECT') {
+  if (e.key.toLowerCase() === 'm' && liveActive && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'SELECT') {
     e.preventDefault();
-    startPTT();
+    toggleMicMute();
   }
 });
-window.addEventListener('keyup', (e) => {
-  if (e.code === 'Space' && pttActive) {
-    e.preventDefault();
-    stopPTT();
-  }
+window.addEventListener('beforeunload', () => {
+  if (liveActive) fetch('/api/live/stop', { method: 'POST', keepalive: true }).catch(() => {});
 });

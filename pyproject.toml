@@ -14,8 +14,8 @@ dependencies = [
     "pyobjc-framework-quartz>=11.0",
     "pyobjc-framework-vision>=11.0",
     "python-dotenv>=1.0.1",
-    "python-multipart>=0.0.12",
     "uvicorn[standard]>=0.32.0",
+    "websockets>=14.0",
 ]
 
 [project.scripts]

@@ -29,50 +29,65 @@
         <canvas id="feed-canvas"></canvas>
       </div>
       <div class="toolbar">
-        <button id="btn-front" class="active" onclick="send({action:'camera', facing:'front'})">Caméra Selfie (Visage)</button>
-        <button id="btn-back" onclick="send({action:'camera', facing:'back'})">Caméra Arrière (Feuille)</button>
+        <button id="btn-front" class="active" onclick="send({action:'return_face_mode'})">🙂 Mode Dialogue (Avant)</button>
+        <button id="btn-back" onclick="send({action:'enter_desk_mode', auto_target:true})">📄 Mode Feuille (Pivot 180° + HD)</button>
+        <button onclick="send({action:'save_desk_pose'})" title="Enregistre l'angle IMU actuel comme pose feuille">📌 Sauver pose feuille</button>
         <button onclick="rotateNext()">Pivoter 90° (<span id="lbl-rot">0°</span>)</button>
         <button id="btn-mirror" class="active" onclick="toggleMirror()">Miroir</button>
+      </div>
+      <div class="toolbar" style="margin-top:6px">
+        <span style="font-size:11.5px; color:var(--muted); align-self:center">Optique / Zoom :</span>
+        <button id="btn-z-05" onclick="send({action:'camera', zoom:0.51})">0.5× Ultra-large</button>
+        <button id="btn-z-1" class="active" onclick="send({action:'camera', zoom:1.0})">1× Classique</button>
+        <button id="btn-z-2" onclick="send({action:'camera', zoom:2.0})">2× Optique</button>
+        <button id="btn-z-3" onclick="send({action:'camera', zoom:3.0})">3×</button>
+        <button id="btn-z-5" onclick="send({action:'camera', zoom:5.0})">5× Téléobjectif</button>
+        <span id="lbl-res" class="mono" style="margin-left:auto; align-self:center; font-size:11.5px; color:var(--muted)">1280×720</span>
       </div>
     </div>
 
     <div class="card">
       <h2>
-        <span>🎙️ Dialogue Vocal — Voxtral 3 (Mistral) + Cerveau Vision (OpenRouter)</span>
+        <span>🎙️ OpenAI GPT-Live 1.1 (Full-Duplex WebRTC) + Cerveau GPT-6.2 Astra</span>
         <span id="lbl-voice-status" class="mono">Prêt</span>
       </h2>
       <div class="voice-bar">
-        <button id="btn-ptt" class="ptt-btn"
-          onmousedown="startPTT()" onmouseup="stopPTT()" onmouseleave="if(pttActive) stopPTT()"
-          ontouchstart="event.preventDefault(); startPTT()" ontouchend="event.preventDefault(); stopPTT()">
-          🎙️ Maintenir pour parler (Espace)
+        <button id="btn-gpt-live" class="ptt-btn" onclick="toggleLiveCall()">
+          🎙️ Démarrer GPT-Live (Full-Duplex)
         </button>
-        <button id="btn-vad" onclick="toggleHandsFree()">🔊 Mains libres (Auto)</button>
+        <button id="btn-mute" onclick="toggleMicMute()" disabled>🔊 Micro actif</button>
         <div class="vu-wrap"><div id="vu-fill" class="vu-fill"></div></div>
+        <audio id="live-audio" autoplay playsinline style="display:none"></audio>
       </div>
       <div class="voice-bar">
         <select id="sel-model" onchange="updateVoiceCfg()">
-          <option value="openai/gpt-6.2-sol">GPT-6.2 Sol (~1,5s Vision)</option>
-          <option value="google/gemini-2.5-flash">Gemini 2.5 Flash (~0,75s Ultra-rapide)</option>
-          <option value="google/gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (~1,0s)</option>
+          <option value="gpt-6.2-astra">Cerveau : GPT-6.2 Astra (Vision)</option>
+          <option value="gpt-6-astra">Cerveau : GPT-6 Astra (Vision)</option>
+          <option value="gpt-6.2-sol">Cerveau : GPT-6.2 Sol (~1,6s)</option>
+          <option value="gpt-6-luna">Cerveau : GPT-6 Luna (~1,1s)</option>
+        </select>
+        <select id="sel-effort" onchange="updateVoiceCfg()">
+          <option value="low">Effort : low (rapide)</option>
+          <option value="medium">Effort : medium</option>
         </select>
         <select id="sel-voice" onchange="updateVoiceCfg()">
-          <option value="voice_592">Voix : Marie (FR)</option>
-          <option value="voice_3137">Voix : Manon (FR)</option>
-          <option value="voice_589">Voix : Léa (FR)</option>
-          <option value="voice_3141">Voix : Camille (FR)</option>
+          <option value="marin">Voix : Marin (FR)</option>
+          <option value="cedar">Voix : Cedar (FR)</option>
+          <option value="verse">Voix : Verse</option>
+          <option value="coral">Voix : Coral</option>
+          <option value="ash">Voix : Ash</option>
+          <option value="sage">Voix : Sage</option>
         </select>
         <button id="btn-vision" class="active" onclick="toggleVision()">👁️ Vision</button>
-        <button id="btn-out" class="active" onclick="toggleAudioOut()">🔈 Sortie : MacBook</button>
         <button onclick="send({action:'voice_config', clear_history:true})">🧹 Reset</button>
       </div>
       <div class="voice-bar">
-        <input id="txt-prompt" type="text" style="flex:1" placeholder="Ou écris un message ici (ex: Est-ce que 2+2 font 5 ? / Qu'est-ce que tu vois ?)"
+        <input id="txt-prompt" type="text" style="flex:1" placeholder="Ou écris directement au cerveau Astra (ex: Est-ce que 2+2 font 5 ? / Regarde ma feuille / Qu'est-ce que tu vois ?)"
           onkeydown="if(event.key==='Enter') sendTextTurn()" />
         <button onclick="sendTextTurn()">Envoyer</button>
       </div>
       <div class="chat-box" id="chat-box">
-        <div style="color:var(--muted); font-size:12px">Appuie sur <b>Espace</b> ou active <b>Mains libres</b> pour parler à Osmo…</div>
+        <div style="color:var(--muted); font-size:12px">Clique sur <b>Démarrer GPT-Live</b> pour parler en full-duplex (tu peux interrompre Osmo à tout moment) ou écris au cerveau ci-dessus…</div>
       </div>
     </div>
 

@@ -18,5 +18,14 @@
     "b_dy_norm": -0.003,
     "k_horiz": 0.0213,
     "k_vert": 0.0375
+  },
+  "desk_pose": {
+    "pitch_deg": 46.0,
+    "roll_deg": -66.3,
+    "yaw_offset_deg": 180.0,
+    "width": 2688,
+    "height": 1512,
+    "bitrate": 16000000,
+    "default_zoom": 1.0
   }
 }

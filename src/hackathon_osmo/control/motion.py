@@ -160,19 +160,34 @@ GESTURES: dict[str, tuple[str, list[GestureStep]]] = {
 }
 
 
+def wrap_angle_deg(angle: float) -> float:
+    """Wrap any angle in degrees into [-180, +180)."""
+    return ((angle + 180.0) % 360.0) - 180.0
+
+
+def angle_diff_deg(target: float, current: float) -> float:
+    """Shortest signed angular difference (target - current) in [-180, +180)."""
+    return wrap_angle_deg(target - current)
+
+
 def screen_to_motor(
     pan_right_dps: float,
     tilt_down_dps: float,
     cfg: PidConfig,
     cur_rotate_deg: int,
     cur_mirror: bool,
+    facing: str = "front",
 ) -> tuple[float, float]:
     """Convert canonical screen-space (pan_right, tilt_down) into physical Osmo (motor_yaw, motor_pitch).
 
-    Automatically compensates for any runtime change in rotate_deg or mirror relative to calibration,
-    guaranteeing movements NEVER invert when the user rotates or flips the video preview.
+    Automatically compensates for any runtime change in rotate_deg, mirror, or camera facing
+    relative to front-camera calibration:
+    - Rear camera looks 180° opposite the front camera, so tilting the rear lens DOWN requires
+      the opposite physical pitch rotation compared to tilting the front lens DOWN.
     """
     sx, sy = pan_right_dps, tilt_down_dps
+    if facing == "back":
+        sy = -sy
 
     # Exact inverse of forward image pipeline: v_cur = M_cur * R_cur * v_raw
     # => v_cal = M_cal * R_cal * R_cur^-1 * M_cur^-1 * v_cur
@@ -215,6 +230,7 @@ class MotionArbiter:
     live_motors: bool = False
     control_mode: str = "speed"
     desk_mode: bool = False  # True when using back camera on sheet/table
+    ai_hold_mode: bool = False  # True when AI explicitly holds gimbal orientation (pauses face PID)
     events: deque[dict[str, str]] = field(default_factory=lambda: deque(maxlen=80))
 
     # Filters & tracking memory
@@ -384,6 +400,11 @@ class MotionArbiter:
             interp.summary = "Mode Feuille / Caméra arrière — tracking visage en pause"
             self._prev_err_x = self._prev_err_y = 0.0
 
+        elif self.ai_hold_mode:
+            interp.state = "AI_HOLD"
+            interp.summary = "Bras piloté par l'IA — position maintenue (tracking visage en pause)"
+            self._prev_err_x = self._prev_err_y = 0.0
+
         elif interp.face_detected:
             target_yaw = self._compute_pid(interp.err_x, self._prev_err_x, dt, self.config.kp_yaw)
             target_pitch = self._compute_pid(interp.err_y, self._prev_err_y, dt, self.config.kp_pitch)
@@ -547,3 +568,76 @@ class MotionArbiter:
 
         self._override_task = asyncio.create_task(_run())
         return True
+
+    async def run_timed_motion(
+        self,
+        steps: list[GestureStep],
+        label: str,
+        *,
+        hold_after: bool = False,
+    ) -> None:
+        """Execute an arbitrary Priority-1 motion sequence (immune to face tracking) and await completion."""
+        if self._override_task and not self._override_task.done():
+            self._override_task.cancel()
+            try:
+                await self._override_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
+        if hold_after:
+            self.ai_hold_mode = True
+
+        self.log("ARM", f"Mouvement IA : {label}")
+
+        async def _run() -> None:
+            self._override_name = label
+            try:
+                for step in steps:
+                    self._override_cmd = (step.pan_right_dps, step.tilt_down_dps, step.roll_dps)
+                    await asyncio.sleep(max(0.05, step.duration_s))
+            finally:
+                self._override_cmd = (0.0, 0.0, 0.0)
+                self._override_name = None
+
+        self._override_task = asyncio.create_task(_run())
+        await self._override_task
+
+    async def move_relative_deg(
+        self,
+        pan_deg: float = 0.0,
+        tilt_deg: float = 0.0,
+        speed_dps: float = 50.0,
+        *,
+        hold_after: bool = True,
+    ) -> tuple[float, float, float]:
+        """Rotate the mechanical arm by (pan_deg, tilt_deg) in canonical screen-space.
+
+        - pan_deg > 0  -> turn RIGHT, pan_deg < 0  -> turn LEFT
+        - tilt_deg > 0 -> tilt DOWN,  tilt_deg < 0 -> tilt UP
+        Returns (clamped_pan_deg, clamped_tilt_deg, duration_s).
+        """
+        pan = max(-160.0, min(160.0, float(pan_deg)))
+        tilt = max(-65.0, min(65.0, float(tilt_deg)))
+        spd = max(15.0, min(95.0, float(speed_dps)))
+
+        dominant = max(abs(pan), abs(tilt))
+        if dominant < 1.0:
+            if hold_after:
+                self.ai_hold_mode = True
+            return 0.0, 0.0, 0.0
+
+        duration_s = max(0.18, dominant / spd)
+        pan_dps = pan / duration_s
+        tilt_dps = tilt / duration_s
+        steps = [
+            GestureStep(pan_dps, tilt_dps, 0.0, duration_s),
+            GestureStep(0.0, 0.0, 0.0, 0.14),  # clean settle
+        ]
+        await self.run_timed_motion(
+            steps,
+            f"Rotation bras (pan={pan:+.0f}°, tilt={tilt:+.0f}° @ {spd:.0f}°/s)",
+            hold_after=hold_after,
+        )
+        return pan, tilt, round(duration_s, 2)

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from hackathon_osmo.control.motion import MotionArbiter, OneEuroFilter, PidConfig, screen_to_motor
+from hackathon_osmo.control.motion import (
+    MotionArbiter,
+    OneEuroFilter,
+    PidConfig,
+    angle_diff_deg,
+    screen_to_motor,
+    wrap_angle_deg,
+)
 from hackathon_osmo.vision.face import FaceBox
 
 
@@ -138,3 +145,30 @@ def test_desk_mode_pauses_face_tracking() -> None:
     assert not interp.face_detected
     assert interp.cmd_yaw_dps == 0.0
     assert interp.cmd_pitch_dps == 0.0
+
+
+def test_ai_hold_mode_prevents_face_tracking_override() -> None:
+    arb = MotionArbiter(ai_hold_mode=True)
+    face = FaceBox(x=0.80, y=0.35, w=0.20, h=0.20, confidence=0.95)
+    interp = arb.update_vision([face], vision_ms=10.0, now=1.0)
+    assert interp.state == "AI_HOLD"
+    assert interp.cmd_yaw_dps == 0.0
+    assert interp.cmd_pitch_dps == 0.0
+
+
+def test_rear_camera_inverts_pitch_axis_vs_front_camera() -> None:
+    """Tilting DOWN with the rear camera must drive the opposite physical pitch motor vs front camera."""
+    cfg = _cal_cfg()
+    front_m = screen_to_motor(0.0, 30.0, cfg, cur_rotate_deg=0, cur_mirror=True, facing="front")
+    back_m = screen_to_motor(0.0, 30.0, cfg, cur_rotate_deg=0, cur_mirror=False, facing="back")
+    assert back_m[0] == pytest.approx(-front_m[0], abs=1e-6)
+    assert back_m[1] == pytest.approx(front_m[1], abs=1e-6)
+
+
+def test_angle_wrap_and_shortest_diff() -> None:
+    assert wrap_angle_deg(190.0) == pytest.approx(-170.0)
+    assert wrap_angle_deg(-190.0) == pytest.approx(170.0)
+    assert angle_diff_deg(170.0, -170.0) == pytest.approx(-20.0)
+    assert angle_diff_deg(-170.0, 170.0) == pytest.approx(20.0)
+
+

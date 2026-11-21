@@ -15,7 +15,12 @@ function connect() {
     state = JSON.parse(ev.data);
     render(state);
   };
-  ws.onclose = () => setTimeout(connect, 1000);
+  ws.onclose = () => {
+    if (typeof stopLiveCall === 'function' && typeof liveActive !== 'undefined' && liveActive) {
+      stopLiveCall();
+    }
+    setTimeout(connect, 1000);
+  };
 }
 connect();
 
@@ -114,9 +119,20 @@ function drawRadar(v, dz) {
 function render(s) {
   const camOk = s.camera.status.startsWith('live_');
   document.getElementById('dot-cam').className = 'dot ' + (camOk ? 'ok' : 'warn');
-  document.getElementById('lbl-cam').textContent = `Pixel 11 Pro : ${s.camera.status}`;
+  document.getElementById('lbl-cam').textContent = `Pixel 11 Pro : ${s.camera.status} (${(s.camera.zoom || 1).toFixed(1)}×)`;
   document.getElementById('lbl-fps').textContent = `${s.camera.fps} fps`;
   document.getElementById('lbl-rot').textContent = `${s.camera.rotate_deg}°`;
+  const lblRes = document.getElementById('lbl-res');
+  if (lblRes && s.camera.width) {
+    const sh = s.camera.sheet && s.camera.sheet.found ? ` · 📄 ${s.camera.sheet.lines_count}L` : '';
+    lblRes.textContent = `${s.camera.width}×${s.camera.height} · ${(s.camera.zoom || 1).toFixed(1)}×${sh}`;
+  }
+  const z = Number(s.camera.zoom || 1.0);
+  const zMap = [['btn-z-05', 0.51], ['btn-z-1', 1.0], ['btn-z-2', 2.0], ['btn-z-3', 3.0], ['btn-z-5', 5.0]];
+  for (const [id, val] of zMap) {
+    const el = document.getElementById(id);
+    if (el) el.className = Math.abs(z - val) < 0.25 ? 'active' : '';
+  }
   document.getElementById('btn-front').className = s.camera.facing === 'front' ? 'active' : '';
   document.getElementById('btn-back').className = s.camera.facing === 'back' ? 'active' : '';
   document.getElementById('btn-mirror').className = s.camera.mirror ? 'active' : '';

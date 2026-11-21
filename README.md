@@ -10,7 +10,7 @@ Compagnon robotique de bureau temps réel synchronisant un **Google Pixel 11 Pro
 │       (Android 17)           │                                      │                                             │
 │  • Caméra avant / arrière    │ ◄── stdin -> HiLightBridge.jar ───── │  1. Vision   Apple Vision ANE (~10–14 ms)   │
 │  • Anneau 8 LEDs RGB HiLight │        (LightsManager, 30 fps)       │  2. Contrôle One-Euro + PID + Gestes + FSM  │
-└──────────────▲───────────────┘                                      │  3. Cerveau  Voxtral 3 STT/TTS + OpenRouter │
+└──────────────▲───────────────┘                                      │  3. Cerveau  OpenAI GPT-Live 1.1 + GPT-6.2 Astra │
                │ bouge physiquement                                   │  4. Studio   FastAPI + WS vidéo/télémétrie  │
 ┌──────────────┴───────────────┐         BLE GATT (fff4/fff5)         └──────────────────────┬──────────────────────┘
 │     DJI Osmo Mobile 3        │ ◄── Paquets DUML v1 (21 B, CRC) ────────────────────────────┘
@@ -40,8 +40,8 @@ hackathon_osmo/
 │   ├── control/                  # Boucle d'asservissement & calibration
 │   │   ├── motion.py             #   One-Euro, PID, mapping invariant screen->motor, gestes, FSM
 │   │   └── calibrate.py          #   Calibration automatique Jacobienne 2×2 (calibration.json)
-│   ├── ai/                       # Pipeline conversationnelle multimodale
-│   │   └── voice_brain.py        #   Mistral Voxtral 3 (STT/TTS) + OpenRouter Vision LLM + afplay
+│   ├── ai/                       # Pipeline conversationnelle 100% OpenAI
+│   │   └── live_brain.py         #   GPT-Live 1.1 (WebRTC + Sideband) + GPT-6.2 Astra (outils natifs)
 │   ├── app/                      # Orchestrateur temps réel & Studio Web
 │   │   ├── runtime.py            #   StudioRuntime (boucles vision, moteur, voix, LEDs)
 │   │   ├── server.py             #   Serveur FastAPI (REST + WebSockets /ws, /ws_video)
@@ -58,8 +58,7 @@ hackathon_osmo/
 
 - **macOS (Apple Silicon)** avec `uv`, `adb` et `scrcpy` (`brew install android-platform-tools scrcpy`).
 - **Variables d'environnement** dans `.env` (ignoré par Git) :
-  - `MISTRAL_API_KEY` — STT (`voxtral-mini-transcribe-3-0`) et TTS (`voxtral-mini-tts-3-0`)
-  - `OPENROUTER_API_KEY` — Cerveau Vision LLM (`openai/gpt-6.2-sol`, `google/gemini-2.5-flash`)
+  - `OPENAI_API_KEY` — Voix full-duplex (`gpt-live-1.1`) + Cerveau Vision & Outils natifs (`gpt-6.2-astra` `reasoning.effort=low`)
 - **Pixel 11 Pro** en ADB sans fil (débrancher le câble USB-C une fois appairé pour éviter la mise en veille surcharge des moteurs OM3).
 
 ## Commandes

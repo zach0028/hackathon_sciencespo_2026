@@ -105,6 +105,8 @@ class PixelCameraStream:
         fps: int = 30,
         facing: str = "front",
         camera_id: str | None = None,
+        zoom: float = 1.0,
+        bitrate: int | None = None,
         port: int = 27183,
     ) -> None:
         self.serial = serial
@@ -113,6 +115,8 @@ class PixelCameraStream:
         self.fps = fps
         self.facing = facing
         self.camera_id = camera_id
+        self.zoom = float(zoom)
+        self.bitrate = bitrate
         self.port = port
         self._adb = find_adb()
         self._server_proc: subprocess.Popen[bytes] | None = None
@@ -175,6 +179,13 @@ class PixelCameraStream:
             server_args.append(f"camera_id={self.camera_id}")
         else:
             server_args.append(f"camera_facing={self.facing}")
+        if self.bitrate is not None and self.bitrate > 0:
+            server_args.append(f"video_bit_rate={int(self.bitrate)}")
+        # Apply native optical/hybrid zoom (Pixel 11 Pro back: 0.51..30, front: 0.9..10)
+        z_min, z_max = (0.51, 10.0) if self.facing == "back" else (0.9, 4.0)
+        clamped_zoom = max(z_min, min(z_max, self.zoom))
+        if abs(clamped_zoom - 1.0) > 0.01 or self.facing == "back":
+            server_args.append(f"camera_zoom={clamped_zoom:.2f}")
 
         self._server_proc = subprocess.Popen(
             self._adb_cmd("shell", " ".join(server_args)),

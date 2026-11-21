@@ -11,7 +11,7 @@ from typing import Any, AsyncIterator
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -45,28 +45,37 @@ async def api_status() -> dict[str, Any]:
     return runtime.snapshot()
 
 
+class LiveSessionOffer(BaseModel):
+    sdp: str
+
+
 class VoiceTextPayload(BaseModel):
     text: str
 
 
-@app.post("/api/voice/audio")
-async def api_voice_audio(audio: UploadFile = File(...)) -> JSONResponse:
-    raw = await audio.read()
+@app.post("/api/live/session")
+async def api_live_session(payload: LiveSessionOffer) -> JSONResponse:
     try:
-        res = await runtime.handle_voice_turn(audio_bytes=raw)
-        return JSONResponse(res.__dict__)
+        res = await runtime.create_live_session(payload.sdp)
+        return JSONResponse(res)
     except Exception as exc:
-        runtime.arbiter.log("VOICE", f"Erreur pipeline vocal : {exc}")
+        runtime.arbiter.log("LIVE", f"Erreur création session GPT-Live : {exc}")
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/live/stop")
+async def api_live_stop() -> JSONResponse:
+    await runtime.stop_live_session()
+    return JSONResponse({"ok": True})
 
 
 @app.post("/api/voice/text")
 async def api_voice_text(payload: VoiceTextPayload) -> JSONResponse:
     try:
-        res = await runtime.handle_voice_turn(user_text=payload.text.strip())
+        res = await runtime.handle_text_turn(payload.text.strip())
         return JSONResponse(res.__dict__)
     except Exception as exc:
-        runtime.arbiter.log("VOICE", f"Erreur pipeline vocal : {exc}")
+        runtime.arbiter.log("BRAIN", f"Erreur cerveau OpenAI : {exc}")
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
@@ -147,20 +156,20 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     runtime.arbiter.log("MOTOR", f"Protocole moteur : {mode}")
 
             elif action == "voice_config":
-                if "model" in msg:
-                    runtime.brain.model = str(msg["model"])
-                    runtime.arbiter.log("BRAIN", f"Modèle cerveau : {runtime.brain.model}")
-                if "voice_id" in msg:
-                    runtime.brain.voice_id = str(msg["voice_id"])
-                    runtime.arbiter.log("VOICE", f"Voix Voxtral 3 : {runtime.brain.voice_id}")
+                if "brain_model" in msg:
+                    runtime.brain.brain_model = str(msg["brain_model"])
+                    runtime.brain._previous_response_id = None
+                    runtime.arbiter.log("BRAIN", f"Cerveau OpenAI : {runtime.brain.brain_model}")
+                if "reasoning_effort" in msg and msg["reasoning_effort"] in ("low", "medium", "high"):
+                    runtime.brain.reasoning_effort = str(msg["reasoning_effort"])
+                    runtime.arbiter.log("BRAIN", f"Reasoning effort : {runtime.brain.reasoning_effort}")
+                if "voice" in msg:
+                    runtime.brain.voice = str(msg["voice"])
+                    runtime.arbiter.log("LIVE", f"Voix GPT-Live : {runtime.brain.voice} (actif au prochain appel)")
                 if "use_vision" in msg:
                     runtime.brain.use_vision = bool(msg["use_vision"])
-                if "audio_output" in msg and msg["audio_output"] in ("mac", "browser"):
-                    runtime.brain.audio_output = str(msg["audio_output"])
-                    runtime.arbiter.log("VOICE", f"Sortie audio : {runtime.brain.audio_output}")
                 if msg.get("clear_history"):
-                    runtime.brain.history.clear()
-                    runtime.brain.transcript.clear()
+                    runtime.brain.reset_memory()
                     runtime.arbiter.log("BRAIN", "Mémoire de conversation réinitialisée")
 
             elif action == "hilight":
@@ -211,13 +220,27 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     runtime.arbiter.set_manual(yaw, pitch, hold_s=0.6)
 
             elif action == "camera":
-                if "facing" in msg:
-                    await runtime.switch_camera(str(msg["facing"]))
+                if "facing" in msg or "zoom" in msg:
+                    await runtime.configure_camera(
+                        facing=str(msg["facing"]) if "facing" in msg else None,
+                        zoom=float(msg["zoom"]) if "zoom" in msg else None,
+                        wait_frame=False,
+                    )
                 if "rotate_deg" in msg:
                     runtime.rotate_deg = int(msg["rotate_deg"]) % 360
                     runtime.arbiter.log("CAMERA", f"Rotation image : {runtime.rotate_deg}°")
                 if "mirror" in msg:
                     runtime.mirror = bool(msg["mirror"])
+
+            elif action == "enter_desk_mode":
+                z = float(msg["zoom"]) if "zoom" in msg and msg["zoom"] is not None else None
+                asyncio.create_task(runtime.enter_desk_reading_mode(zoom=z, auto_target=bool(msg.get("auto_target", True))))
+
+            elif action == "return_face_mode":
+                asyncio.create_task(runtime.return_to_face_mode())
+
+            elif action == "save_desk_pose":
+                runtime.save_current_desk_pose()
 
             elif action == "pid":
                 cfg = runtime.arbiter.config
