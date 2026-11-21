@@ -38,15 +38,15 @@ OPENAI_WS_BASE = "wss://api.openai.com/v1"
 LIVE_MODEL = "gpt-live-1.1"
 DEFAULT_BRAIN_MODEL = "gpt-6.2-sol"
 DEFAULT_REASONING_EFFORT = "low"
-DEFAULT_LIVE_VOICE = "marin"
+DEFAULT_LIVE_VOICE = "cedar"
 
 LIVE_VOICES = [
-    {"id": "marin", "label": "Marin (FR · recommandé)"},
-    {"id": "cedar", "label": "Cedar (FR · naturel)"},
-    {"id": "verse", "label": "Verse (expressif)"},
-    {"id": "coral", "label": "Coral (chaleureux)"},
-    {"id": "ash", "label": "Ash (posé)"},
-    {"id": "sage", "label": "Sage (clair)"},
+    {"id": "cedar", "label": "Cedar (Homme FR · recommandé)"},
+    {"id": "ash", "label": "Ash (Homme posé)"},
+    {"id": "verse", "label": "Verse (Homme expressif)"},
+    {"id": "marin", "label": "Marin (Femme FR)"},
+    {"id": "coral", "label": "Coral (Femme chaleureuse)"},
+    {"id": "sage", "label": "Sage (Clair)"},
 ]
 
 BRAIN_MODELS = [
