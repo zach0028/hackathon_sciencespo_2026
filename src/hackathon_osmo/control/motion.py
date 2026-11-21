@@ -113,34 +113,34 @@ GESTURES: dict[str, tuple[str, list[GestureStep]]] = {
     "nod_yes": (
         "Hochement OUI (haut / bas)",
         [
-            # Two bold, unmistakable auditorium-visible vertical nods (zero net drift!)
-            GestureStep(0.0, +110.0, 0.0, 0.34),
-            GestureStep(0.0, -122.0, 0.0, 0.38),
-            GestureStep(0.0, +118.0, 0.0, 0.35),
-            GestureStep(0.0, -115.0, 0.0, 0.35),
-            GestureStep(0.0, +40.0, 0.0, 0.20),
+            # Two bold ~30° vertical nods inside OM3's verified <=95°/s speed envelope (zero net drift!)
+            GestureStep(0.0, +88.0, 0.0, 0.42),
+            GestureStep(0.0, -94.0, 0.0, 0.46),
+            GestureStep(0.0, +92.0, 0.0, 0.43),
+            GestureStep(0.0, -90.0, 0.0, 0.43),
+            GestureStep(0.0, +32.0, 0.0, 0.16),
             GestureStep(0.0, 0.0, 0.0, 0.12),
         ],
     ),
     "shake_no": (
         "Secousse NON (gauche / droite)",
         [
-            # Wide, snappy horizontal head shakes clearly readable across the room (zero net drift!)
-            GestureStep(-135.0, 0.0, 0.0, 0.26),
-            GestureStep(+155.0, 0.0, 0.0, 0.38),
-            GestureStep(-155.0, 0.0, 0.0, 0.38),
-            GestureStep(+155.0, 0.0, 0.0, 0.38),
-            GestureStep(-119.0, 0.0, 0.0, 0.20),
+            # Wide ~42° horizontal head shakes inside OM3's verified <=96°/s speed envelope (zero net drift!)
+            GestureStep(-92.0, 0.0, 0.0, 0.34),
+            GestureStep(+96.0, 0.0, 0.0, 0.50),
+            GestureStep(-96.0, 0.0, 0.0, 0.50),
+            GestureStep(+96.0, 0.0, 0.0, 0.50),
+            GestureStep(-88.0, 0.0, 0.0, 0.19),
             GestureStep(0.0, 0.0, 0.0, 0.12),
         ],
     ),
     "curious_tilt": (
         "Inclinaison curieuse",
         [
-            # Bold Pixar-style diagonal head cock using Pan + Pitch + Roll, hold, then symmetric unwind!
-            GestureStep(+72.0, -52.0, +78.0, 0.44),
-            GestureStep(0.0, 0.0, 0.0, 0.58),
-            GestureStep(-72.0, +52.0, -78.0, 0.44),
+            # Bold diagonal curious look (~30° pan + ~20° lift, roll=0 so OM3 CmdId 0x0C never drops packet!)
+            GestureStep(+64.0, -48.0, 0.0, 0.55),
+            GestureStep(0.0, 0.0, 0.0, 0.65),
+            GestureStep(-64.0, +48.0, 0.0, 0.55),
             GestureStep(0.0, 0.0, 0.0, 0.12),
         ],
     ),
