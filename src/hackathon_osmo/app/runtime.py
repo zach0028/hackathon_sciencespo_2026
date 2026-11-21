@@ -95,6 +95,7 @@ class StudioRuntime:
 
         self.pixel_serial: str | None = None
         self.camera_status: str = "disconnected"
+        self._optical_phase: str = ""
         self.osmo_name: str | None = None
         self.osmo_connected: bool = False
         self.osmo_packets: int = 0
@@ -235,27 +236,30 @@ class StudioRuntime:
         best_frame: np.ndarray | None = None
         best_lap = -1.0
         good_streak = 0
-
-        while True:
-            raw = self._latest_raw_bgr
-            if raw is not None:
-                lap = await asyncio.to_thread(compute_sharpness, raw)
-                if lap > best_lap:
-                    best_lap = lap
-                    best_frame = raw.copy()
-                elapsed = time.monotonic() - t0
-                if lap >= sharp_instant and elapsed >= min_wait_s:
-                    return best_frame, round(best_lap, 1)
-                if lap >= sharp_ok:
-                    good_streak += 1
-                    if good_streak >= 2 and elapsed >= min_wait_s:
+        self._optical_phase = "focusing"
+        try:
+            while True:
+                raw = self._latest_raw_bgr
+                if raw is not None:
+                    lap = await asyncio.to_thread(compute_sharpness, raw)
+                    if lap > best_lap:
+                        best_lap = lap
+                        best_frame = raw.copy()
+                    elapsed = time.monotonic() - t0
+                    if lap >= sharp_instant and elapsed >= min_wait_s:
                         return best_frame, round(best_lap, 1)
-                else:
-                    good_streak = 0
+                    if lap >= sharp_ok:
+                        good_streak += 1
+                        if good_streak >= 2 and elapsed >= min_wait_s:
+                            return best_frame, round(best_lap, 1)
+                    else:
+                        good_streak = 0
 
-            if time.monotonic() - t0 >= max_wait_s:
-                return best_frame, round(max(0.0, best_lap), 1)
-            await asyncio.sleep(0.055)
+                if time.monotonic() - t0 >= max_wait_s:
+                    return best_frame, round(max(0.0, best_lap), 1)
+                await asyncio.sleep(0.055)
+        finally:
+            self._optical_phase = ""
 
     def _get_robot_context(self) -> str:
         interp = self.arbiter.latest
@@ -1461,6 +1465,7 @@ class StudioRuntime:
                 "rotate_deg": self.rotate_deg,
                 "mirror": self.mirror,
                 "fps": round(self._fps_actual, 1),
+                "optical_phase": self._optical_phase,
                 "desk_pose": self.desk_pose,
                 "sheet": {
                     "found": self._latest_sheet.found,
@@ -1477,6 +1482,7 @@ class StudioRuntime:
                 "session_id": self.brain.session_id,
                 "busy": self.brain.busy,
                 "speaking": self.brain.speaking,
+                "micro": self.brain.micro_snapshot(),
                 "live_model": self.brain.live_model,
                 "brain_model": self.brain.brain_model,
                 "reasoning_effort": self.brain.reasoning_effort,

@@ -55,10 +55,18 @@
 
   // --- Surgical monochrome-first accent colors (mirrors rear HiLight 8-LED ring on bottom edge rim) ---
   const RIM_COLORS = {
-    idle: [96, 165, 250],        // crisp blueprint steel blue (matches reference bottom rim!)
+    idle: [96, 165, 250],        // crisp blueprint steel blue
     listen: [96, 165, 250],      // blueprint blue
-    think: [245, 158, 11],       // technical amber
-    speak: [125, 211, 252],      // ice cyan
+    attentive: [56, 189, 248],   // bright attentive cyan (user speaking!)
+    barge_in: [224, 242, 254],   // crisp flash on interruption
+    think: [245, 158, 11],       // technical amber (thinking delta!)
+    intent_desk: [251, 191, 36], // warm amber pre-action anticipation
+    focusing: [167, 139, 250],   // crisp violet AF squint
+    reading: [251, 191, 36],     // warm reading saccades
+    formulating: [96, 165, 250], // eager pre-speech return
+    speak: [125, 211, 252],      // ice cyan syllable oscilloscope
+    greet: [52, 211, 153],       // warm emerald arrival greet
+    drowsy: [148, 163, 184],     // soft slate drowsy transition
     yes: [52, 211, 153],         // emerald
     no: [248, 113, 113],         // coral
     curious: [251, 191, 36],     // warm amber
@@ -106,7 +114,18 @@
     armPanDps: 0,
     armTiltDps: 0,
     armRelPanDeg: 0,
-    armRelPitchDeg: 0
+    armRelPitchDeg: 0,
+    // Zero-latency organic micro-states (SSE thinking/tool/speech deltas + optical AF + face arrival)
+    microPhase: "idle",
+    toolIntent: "",
+    opticalPhase: "",
+    lastPulseSeq: 0,
+    pulseEnergy: 0,      // 0..1 decays smoothly; kicked by every real SSE/transcript delta!
+    thinkCursor: 0,      // advances along the 18 eye CAD nodes on each thinking delta!
+    bargeInUntil: 0,
+    greetUntil: 0,
+    faceLostAt: 0,
+    drowsyLevel: 0       // 0..1 smooth lid droop between 14s and 25s idle
   };
 
   function wrapDeg(deg) {
@@ -174,6 +193,39 @@
     const liveOn = Boolean(voice.live_connected);
     const searching = vis.state === "SEARCHING";
 
+    // Zero-latency micro-state deltas from OpenAI streaming & local optical AF
+    const micro = voice.micro || {};
+    const nowMs = performance.now();
+    live.microPhase = String(micro.phase || "idle");
+    live.toolIntent = String(micro.tool_intent || "");
+    live.opticalPhase = String(cam.optical_phase || "");
+
+    const seq = Number(micro.pulse_seq || 0);
+    if (seq !== live.lastPulseSeq) {
+      live.lastPulseSeq = seq;
+      live.pulseEnergy = 1.0;
+      live.thinkCursor = (live.thinkCursor + 1) % 18;
+      lastActivityAt = nowMs;
+    }
+    if (micro.barge_in_age_ms !== null && micro.barge_in_age_ms !== undefined && micro.barge_in_age_ms < 420) {
+      if (nowMs > live.bargeInUntil) {
+        live.bargeInUntil = nowMs + 420;
+        anim.blinkPhase = 0.001;
+        sp.pitch.vel -= 2.4; // crisp natural micro-recoil on interruption!
+      }
+    }
+
+    // Local 0ms arrival greet: when user returns in front of camera after > 8s absence
+    const wasFace = live.faceDetected;
+    const nowFace = Boolean(vis.face_detected);
+    if (!nowFace && wasFace) {
+      live.faceLostAt = nowMs;
+    } else if (nowFace && !wasFace && live.faceLostAt > 0 && (nowMs - live.faceLostAt) > 8000 && !isDesk) {
+      live.greetUntil = nowMs + 950;
+      anim.gestureStart = nowMs;
+      lastActivityAt = nowMs;
+    }
+
     // Real-time mechanical arm coupling (IMU attitude delta + live motor velocity)
     live.armConnected = Boolean(osmo.connected);
     live.armPivoting = Boolean(osmo.pivoting);
@@ -239,10 +291,21 @@
     }
 
     const idleForMs = performance.now() - lastActivityAt;
+    const drowsy = !manualDnd && !liveOn && !speaking && !busy && !isDesk && !searching && idleForMs > 14000 && idleForMs <= 25000;
+    live.drowsyLevel = drowsy ? Math.min(1, (idleForMs - 14000) / 11000) : 0;
+
     if (isDesk) {
       live.mode = "desk";
-      live.mood = sheetFound ? "desk_locked" : "desk";
-      live.stateLabel = busy ? "ANALYZING" : sheetFound ? "SHEET LOCKED" : "DESK MODE";
+      if (live.opticalPhase === "focusing") {
+        live.mood = "focusing";
+        live.stateLabel = "AF // FOCUSING";
+      } else if (live.microPhase === "reading_sheet" || busy) {
+        live.mood = "reading";
+        live.stateLabel = "READING SHEET";
+      } else {
+        live.mood = sheetFound ? "desk_locked" : "desk";
+        live.stateLabel = sheetFound ? "SHEET LOCKED" : "DESK MODE";
+      }
     } else if (manualDnd || (!liveOn && !speaking && !busy && !activeGesture && !searching && idleForMs > 25000)) {
       live.mode = "focus";
       live.mood = "idle";
@@ -260,15 +323,39 @@
       } else if (activeGesture === "curious_tilt") {
         live.mood = "curious";
         live.stateLabel = "CURIOUS";
+      } else if (performance.now() < live.bargeInUntil) {
+        live.mood = "barge_in";
+        live.stateLabel = "BARGE-IN";
+      } else if (live.opticalPhase === "focusing") {
+        live.mood = "focusing";
+        live.stateLabel = "AF // FOCUSING";
       } else if (searching) {
         live.mood = "search";
         live.stateLabel = "SCANNING";
-      } else if (busy) {
+      } else if (live.microPhase === "tool_intent" && live.toolIntent === "look_at_desk") {
+        live.mood = "intent_desk";
+        live.stateLabel = "INTENT // DESK";
+      } else if (live.microPhase === "reading_sheet") {
+        live.mood = "reading";
+        live.stateLabel = "READING";
+      } else if (live.microPhase === "formulating") {
+        live.mood = "formulating";
+        live.stateLabel = "FORMULATING";
+      } else if (live.microPhase === "deep_thinking" || busy) {
         live.mood = "think";
-        live.stateLabel = "THINKING";
+        live.stateLabel = live.microPhase === "deep_thinking" ? "THINKING Δ" : "THINKING";
       } else if (speaking) {
         live.mood = "speak";
         live.stateLabel = "SPEAKING";
+      } else if (live.microPhase === "user_speaking") {
+        live.mood = "attentive";
+        live.stateLabel = "ATTENTIVE";
+      } else if (performance.now() < live.greetUntil) {
+        live.mood = "greet";
+        live.stateLabel = "WELCOME BACK";
+      } else if (drowsy) {
+        live.mood = "drowsy";
+        live.stateLabel = "DROWSING";
       } else if (liveOn) {
         live.mood = "listen";
         live.stateLabel = vis.face_detected ? "LISTENING" : "STANDBY";
@@ -434,12 +521,27 @@
     live.deskMode = preset === "desk";
     live.sheetFound = preset === "desk";
     live.speaking = preset === "speak";
-    live.busy = preset === "think";
+    live.busy = preset === "think" || preset === "reading";
+    live.opticalPhase = preset === "focusing" ? "focusing" : "";
+    live.microPhase = preset === "think" ? "deep_thinking" : preset === "attentive" ? "user_speaking" : preset;
+    live.toolIntent = preset === "intent_desk" ? "look_at_desk" : "";
+    live.drowsyLevel = preset === "drowsy" ? 0.65 : 0;
+    live.pulseEnergy = 1.0;
     live.zoom = 1.0;
     live.width = preset === "desk" ? 2688 : 1280;
     live.height = preset === "desk" ? 1512 : 720;
     live.hilightColor = null;
     live.hilightEffect = preset === "desk" ? "sheet_ringlight" : preset;
+
+    if (preset === "barge_in") {
+      live.bargeInUntil = performance.now() + 900;
+      anim.blinkPhase = 0.001;
+      sp.pitch.vel -= 2.4;
+    }
+    if (preset === "greet") {
+      live.greetUntil = performance.now() + 1400;
+      sp.pitch.vel += 1.8;
+    }
 
     if (preset === "focus") {
       live.mode = "focus";
@@ -456,8 +558,16 @@
       live.mood = preset;
       const labels = {
         listen: "LISTENING",
-        think: "THINKING",
+        attentive: "ATTENTIVE · INPUT Δ",
+        barge_in: "BARGE-IN",
+        think: "THINKING Δ",
+        intent_desk: "INTENT // DESK",
+        focusing: "AF // FOCUSING",
+        reading: "READING SACCADES",
+        formulating: "FORMULATING",
         speak: "SPEAKING",
+        greet: "WELCOME BACK",
+        drowsy: "DROWSING",
         yes: "YES",
         no: "NO",
         curious: "CURIOUS",
@@ -706,14 +816,20 @@
     ctx.stroke(eyePath);
 
     // 4. Tiny hollow circular CAD vector nodes (○) along eye perimeter
+    // During THINKING Δ / ATTENTIVE, a luminous token-driven wave travels around the control vertices!
     const nodeR = Math.max(1.55, Math.min(2.6, scalePx * 0.0145));
+    const travelIdx = eyeOpts.travelIdx;
     for (let i = 0; i < contour2D.length; i++) {
       const p = contour2D[i];
+      const dist = travelIdx >= 0
+        ? Math.min(Math.abs(i - travelIdx), contour2D.length - Math.abs(i - travelIdx))
+        : 99;
+      const lit = dist <= 1;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, nodeR, 0, Math.PI * 2);
-      ctx.fillStyle = "#07080b";
+      ctx.arc(p.x, p.y, lit ? nodeR * 1.35 : nodeR, 0, Math.PI * 2);
+      ctx.fillStyle = lit ? `rgba(${rimRgb}, 0.92)` : "#07080b";
       ctx.fill();
-      ctx.strokeStyle = i % 5 === 0 && live.busy ? `rgba(${rimRgb}, 0.95)` : nodeColor;
+      ctx.strokeStyle = lit ? `rgba(${rimRgb}, 1.0)` : nodeColor;
       ctx.lineWidth = 1.05;
       ctx.stroke();
     }
@@ -782,6 +898,14 @@
       tRoll = velBank - inputX * 0.04;
     }
 
+    // Decay token-pulse energy smoothly (re-energized continuously in demo for think/speak/attentive)
+    if (demoMode && (live.mood === "think" || live.mood === "speak" || live.mood === "attentive" || live.mood === "reading")) {
+      live.pulseEnergy = 0.55 + 0.45 * Math.abs(Math.sin(t * 7.5));
+      live.thinkCursor = Math.floor(t * 14) % 18;
+    } else {
+      live.pulseEnergy = Math.max(0, live.pulseEnergy - dt * 2.4);
+    }
+
     const gElapsed = (now - anim.gestureStart) * 0.001;
 
     if (live.mode === "focus") {
@@ -791,22 +915,64 @@
       tScale = 0.78;
       tCy = 0.44;
     } else if (live.mode === "desk") {
-      // Shrink cleanly to left side & mirror physical downward desk pitch!
+      // Shrink cleanly to left side & mirror physical downward desk pitch + reading saccades!
       const narrow = W < 680;
       const deskPitchRad = !demoMode && live.armConnected
         ? Math.max(0.20, Math.min(0.58, live.armRelPitchDeg * (Math.PI / 180) * 0.85))
         : 0.36;
-      tYaw = 0.28 + Math.sin(t * 0.8) * 0.04;
-      tPitch = deskPitchRad;
+      // Left-to-right horizontal reading saccades while Vision Brain reads the sheet!
+      const readSweep = live.mood === "reading" ? (((t * 1.15) % 1) * 0.26 - 0.13) : Math.sin(t * 0.8) * 0.04;
+      const readLine = live.mood === "reading" ? (Math.floor(t * 1.15) % 3) * 0.045 : 0;
+      tYaw = 0.28 + readSweep;
+      tPitch = deskPitchRad + readLine;
       tRoll = -0.05;
       tScale = narrow ? 0.001 : 0.46;
       tCx = narrow ? 0.15 : 0.16;
       tCy = 0.52;
     } else if (demoMode || !live.armConnected) {
-      if (live.mood === "think") {
-        tYaw = 0.28 + Math.sin(t * 1.4) * 0.05;
-        tPitch = -0.22 + Math.cos(t * 1.1) * 0.04;
-        tRoll = 0.08;
+      if (live.mood === "attentive") {
+        // Lean slightly in + attentive head tilt while user is speaking!
+        tScale = 1.045 + live.pulseEnergy * 0.015;
+        tPitch += 0.05;
+        tRoll = 0.07;
+      } else if (live.mood === "barge_in") {
+        // Crisp startled recoil on mid-sentence interruption
+        tPitch -= 0.15;
+        tScale = 1.04;
+      } else if (live.mood === "think") {
+        // Reflective glance up-right driven by thinking deltas
+        tYaw = 0.28 + Math.sin(t * 1.6) * 0.07;
+        tPitch = -0.22 + Math.cos(t * 1.2) * 0.05;
+        tRoll = 0.09;
+      } else if (live.mood === "intent_desk") {
+        // Pre-action anticipation: glances downward toward the sheet ~400ms before motors fire!
+        tYaw = -0.42;
+        tPitch = 0.30;
+        tRoll = -0.06;
+      } else if (live.mood === "focusing") {
+        // Autofocus squint lean-in
+        tScale = 1.05;
+        tPitch = 0.10;
+      } else if (live.mood === "reading") {
+        // Authentic human left-to-right reading saccades + carriage return line by line!
+        const saw = (t * 1.1) % 1;
+        const lineStep = Math.floor(t * 1.1) % 3;
+        tYaw = -0.26 + saw * 0.44;
+        tPitch = 0.16 + lineStep * 0.06;
+        tRoll = -0.03;
+      } else if (live.mood === "formulating") {
+        // Snaps eye contact cleanly back to user ~500ms before voice starts
+        tYaw = 0.0;
+        tPitch = -0.05;
+        tScale = 1.02;
+      } else if (live.mood === "greet") {
+        // Warm welcome nod when face returns after absence
+        tPitch = -0.04 + Math.sin(gElapsed * 8.5) * 0.18 * Math.exp(-gElapsed * 1.6);
+        tScale = 1.03;
+      } else if (live.mood === "drowsy") {
+        // Gentle droop before quiet mode
+        tPitch = 0.12 + live.drowsyLevel * 0.08;
+        tScale = 1.0 - live.drowsyLevel * 0.12;
       } else if (live.mood === "yes") {
         tPitch = 0.06 + Math.sin(gElapsed * 9.5) * 0.24 * Math.exp(-gElapsed * 0.35);
       } else if (live.mood === "no") {
@@ -823,11 +989,23 @@
         tRoll += Math.sin(t * 2.4) * 0.025;
       }
     } else {
-      // When arm IS physically connected, add only subtle expressive micro-motion on top of real arm pose
-      if (live.mood === "think") {
+      // When arm IS physically connected, layer subtle organic micro-states on top of real arm pose
+      if (live.mood === "attentive") {
+        tScale = 1.04;
+        tRoll += 0.06;
+      } else if (live.mood === "barge_in") {
+        tPitch -= 0.12;
+      } else if (live.mood === "think") {
         tYaw += 0.18;
         tPitch -= 0.14;
         tRoll += 0.07;
+      } else if (live.mood === "intent_desk") {
+        tYaw -= 0.22;
+        tPitch += 0.22;
+      } else if (live.mood === "reading") {
+        tYaw += (((t * 1.1) % 1) * 0.26 - 0.13);
+      } else if (live.mood === "greet") {
+        tPitch += Math.sin(gElapsed * 8.5) * 0.14 * Math.exp(-gElapsed * 1.6);
       } else if (live.mood === "curious") {
         tRoll += 0.18;
       } else if (live.mood === "speak") {
@@ -870,12 +1048,26 @@
       }
     }
 
-    const targetOpen = live.mode === "focus" ? 0.14 : blinkMult;
+    let baseOpen = 1.0;
+    if (live.mode === "focus") baseOpen = 0.14;
+    else if (live.mood === "drowsy") baseOpen = Math.max(0.24, 1.0 - live.drowsyLevel * 0.72);
+    else if (live.mood === "focusing") baseOpen = 0.56; // autofocus squint!
+    else if (live.mood === "attentive" || live.mood === "barge_in") baseOpen = 1.12; // attentive widen!
+
+    const targetOpen = baseOpen * blinkMult;
     const eyeOpen = stepSpring(sp.eyeOpen, targetOpen, dt);
-    const smile = stepSpring(sp.smile, live.mood === "yes" ? 1.0 : live.mood === "speak" ? 0.18 : 0.0, dt);
+    const smile = stepSpring(
+      sp.smile,
+      (live.mood === "yes" || live.mood === "greet") ? 1.0 : live.mood === "speak" ? 0.18 : 0.0,
+      dt
+    );
     const frown = stepSpring(sp.frown, live.mood === "no" ? 1.0 : 0.0, dt);
-    const asym = stepSpring(sp.asym, live.mood === "curious" ? 1.0 : 0.0, dt);
-    const wave = stepSpring(sp.wave, live.speaking ? 1.0 : live.mood === "listen" ? 0.12 : 0.0, dt);
+    const asym = stepSpring(sp.asym, live.mood === "curious" ? 1.0 : live.mood === "attentive" ? 0.25 : 0.0, dt);
+    // Syllable-driven speaking wave: pulses on REAL output_transcript.delta energy!
+    const speakTarget = live.speaking
+      ? (0.35 + 0.65 * Math.max(0.2, live.pulseEnergy))
+      : (live.mood === "attentive" ? 0.22 + 0.25 * live.pulseEnergy : live.mood === "listen" ? 0.10 : 0.0);
+    const wave = stepSpring(sp.wave, speakTarget, dt);
 
     // 3. Clear pure obsidian background
     ctx.fillStyle = "#07080b";
@@ -960,8 +1152,18 @@
       ctx.stroke();
       ctx.restore();
 
-      // Thinking state: crisp dashed technical orbital ring around center node
-      if (live.busy) {
+      // Thinking / Focusing reticle around center origin node
+      if (live.mood === "focusing") {
+        // Autofocus precision bracket pulsing cleanly around origin
+        const rAf = scalePx * (0.14 + 0.03 * Math.sin(t * 14.0));
+        ctx.save();
+        ctx.strokeStyle = `rgba(${rimRgb}, 0.92)`;
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.arc(ox, oy, rAf, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      } else if (live.busy || live.mood === "think" || live.mood === "intent_desk") {
         ctx.save();
         ctx.strokeStyle = `rgba(${rimRgb}, 0.85)`;
         ctx.lineWidth = 1.3;
@@ -973,9 +1175,17 @@
       }
     }
 
-    // 7. Two 3D-projected CAD eyes (45° hatching + perimeter vector nodes)
+    // 7. Two 3D-projected CAD eyes (45° hatching + token-animated perimeter vector nodes!)
     const hatchColor = `rgba(198, 212, 232, ${(0.42 * anim.wireAlpha).toFixed(3)})`;
     const nodeColor = `rgba(218, 228, 244, ${(0.76 * anim.wireAlpha).toFixed(3)})`;
+    const showTravel = (
+      live.mood === "think" ||
+      live.mood === "attentive" ||
+      live.mood === "reading" ||
+      live.mood === "intent_desk"
+    ) && (live.pulseEnergy > 0.08 || live.busy);
+    const activeVertexIdx = showTravel ? live.thinkCursor : -1;
+
     [-1, 1].forEach((side) => {
       const scaleMod = side === 1 ? 1.0 + asym * 0.16 : 1.0 - asym * 0.08;
       drawDraftingEye(R, side, cx, cy, scalePx, {
@@ -987,7 +1197,8 @@
         strokeAlpha: anim.wireAlpha,
         nodeColor,
         hatchColor,
-        rimRgb
+        rimRgb,
+        travelIdx: activeVertexIdx
       });
     });
 

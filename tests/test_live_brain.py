@@ -114,3 +114,52 @@ def test_consume_user_utterance_clears_buffer_between_delegations() -> None:
     second = brain._consume_user_utterance()
     assert second == "Maintenant regarde en haut"
 
+
+def test_stream_deltas_drive_zero_latency_micro_states() -> None:
+    lights: list[str] = []
+    brain = OpenAILiveBrain(on_light=lights.append)
+
+    brain._handle_stream_event("response.in_progress", {}, "thinking")
+    assert brain.micro_phase == "thinking"
+
+    brain._handle_stream_event("response.reasoning_summary_text.delta", {"delta": "step 1"}, "thinking")
+    assert brain.micro_phase == "deep_thinking"
+    p1 = brain.micro_pulse_seq
+    assert p1 >= 1
+
+    brain._handle_stream_event(
+        "response.output_item.added",
+        {"item": {"type": "function_call", "name": "look_at_desk"}},
+        "thinking",
+    )
+    assert brain.micro_phase == "tool_intent"
+    assert brain.micro_tool_intent == "look_at_desk"
+    assert brain.micro_pulse_seq == p1 + 1
+    assert lights == ["curious"]
+
+    brain._handle_stream_event("response.output_text.delta", {"delta": "Je vois"}, "reading_sheet")
+    assert brain.micro_phase == "formulating"
+    assert brain.micro_pulse_seq == p1 + 2
+
+
+def test_sideband_detects_attentive_listening_and_barge_in() -> None:
+    brain = OpenAILiveBrain()
+
+    async def _run() -> None:
+        await brain._handle_sideband_event({"type": "session.input_transcript.delta", "delta": "Salut "})
+        snap = brain.micro_snapshot()
+        assert snap["phase"] == "user_speaking"
+        assert snap["pulse_seq"] >= 1
+
+        # Osmo starts speaking -> user interrupts mid-sentence -> barge_in!
+        await brain._handle_sideband_event({"type": "session.output_transcript.delta", "delta": "Bonjour "})
+        assert brain.speaking is True
+        await brain._handle_sideband_event({"type": "input_audio_buffer.speech_started"})
+        snap2 = brain.micro_snapshot()
+        assert brain.speaking is False
+        assert snap2["phase"] == "barge_in"
+        assert snap2["barge_in_age_ms"] is not None and snap2["barge_in_age_ms"] < 1000.0
+
+    asyncio.run(_run())
+
+

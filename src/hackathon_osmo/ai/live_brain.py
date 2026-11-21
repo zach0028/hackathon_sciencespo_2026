@@ -314,6 +314,13 @@ class OpenAILiveBrain:
     _last_commentary_sent_t: float | None = None
     _last_user_speech_t: float | None = None
 
+    # Zero-latency organic micro-states driven by real streaming deltas (thinking / tool_intent / speech / barge-in)
+    micro_phase: str = "idle"
+    micro_tool_intent: str = ""
+    micro_pulse_seq: int = 0
+    micro_barge_in_t: float = 0.0
+    micro_updated_t: float = 0.0
+
     # Conversation memory & UI transcript
     _previous_response_id: str | None = None
     _user_transcript_buf: str = ""
@@ -359,6 +366,28 @@ class OpenAILiveBrain:
         if self._http and not self._http.is_closed:
             await self._http.aclose()
             self._http = None
+
+    def _set_micro(self, phase: str, *, pulse: bool = False, tool_intent: str | None = None) -> None:
+        self.micro_phase = phase
+        self.micro_updated_t = time.monotonic()
+        if pulse:
+            self.micro_pulse_seq += 1
+        if tool_intent is not None:
+            self.micro_tool_intent = tool_intent
+
+    def micro_snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
+        barge_age_ms = round((now - self.micro_barge_in_t) * 1000.0, 0) if self.micro_barge_in_t > 0 else None
+        # Auto-expire transient user_speaking after 1.6s of silence
+        phase = self.micro_phase
+        if phase == "user_speaking" and (now - self.micro_updated_t) > 1.6 and not self.busy and not self.speaking:
+            phase = "idle"
+        return {
+            "phase": phase,
+            "tool_intent": self.micro_tool_intent,
+            "pulse_seq": self.micro_pulse_seq,
+            "barge_in_age_ms": barge_age_ms if (barge_age_ms is not None and barge_age_ms < 2000.0) else None,
+        }
 
     def reset_memory(self) -> None:
         self._previous_response_id = None
@@ -496,12 +525,27 @@ class OpenAILiveBrain:
     async def _handle_sideband_event(self, event: dict[str, Any]) -> None:
         etype = str(event.get("type") or "")
 
-        # --- Real-time input (user) transcripts ---
-        if etype in ("session.input_transcript.delta", "conversation.item.input_audio_transcription.delta"):
+        # --- Real-time input (user) speech start & transcripts (0ms attentive lean-in + barge-in detection!) ---
+        if etype in ("input_audio_buffer.speech_started", "session.input_audio.started"):
+            self._last_user_speech_t = time.monotonic()
+            if self.speaking:
+                self.speaking = False
+                self.micro_barge_in_t = time.monotonic()
+                self._set_micro("barge_in", pulse=True, tool_intent="")
+            else:
+                self._set_micro("user_speaking", pulse=True)
+
+        elif etype in ("session.input_transcript.delta", "conversation.item.input_audio_transcription.delta"):
             delta = str(event.get("delta") or event.get("text") or "")
             if delta:
                 self._user_transcript_buf += delta
                 self._last_user_speech_t = time.monotonic()
+                if self.speaking:
+                    self.speaking = False
+                    self.micro_barge_in_t = time.monotonic()
+                    self._set_micro("barge_in", pulse=True, tool_intent="")
+                elif not self.busy:
+                    self._set_micro("user_speaking", pulse=True)
 
         elif etype in (
             "session.input_transcript.done",
@@ -511,13 +555,15 @@ class OpenAILiveBrain:
             final = str(event.get("transcript") or event.get("text") or self._user_transcript_buf).strip()
             self._user_transcript_buf = ""
             self._last_user_speech_t = time.monotonic()
+            if not self.busy and not self.speaking:
+                self._set_micro("idle")
             if final:
                 self._recent_turns.append({"role": "user", "content": final})
                 self._append_ui_transcript(user=final, reply=None, source="live")
                 if self.recorder:
                     self.recorder.record_event("LIVE_IN", final)
 
-        # --- Real-time output (assistant) transcripts ---
+        # --- Real-time output (assistant) transcripts (syllable-synchronous oscilloscope pulse!) ---
         elif etype in (
             "session.output_transcript.delta",
             "response.audio_transcript.delta",
@@ -531,6 +577,7 @@ class OpenAILiveBrain:
                     if self.recorder and dt_speech < 10000.0:
                         self.recorder.record_live_audio_latency(dt_speech)
                 self.speaking = True
+                self._set_micro("speaking", pulse=True, tool_intent="")
                 self._bot_transcript_buf += delta
 
         elif etype in (
@@ -540,6 +587,8 @@ class OpenAILiveBrain:
             "response.output_audio_transcript.done",
         ):
             self.speaking = False
+            if not self.busy:
+                self._set_micro("idle", tool_intent="")
             final = str(event.get("transcript") or event.get("text") or self._bot_transcript_buf).strip()
             self._bot_transcript_buf = ""
             if final:
@@ -562,6 +611,7 @@ class OpenAILiveBrain:
                 if self.recorder and dt_speech < 10000.0:
                     self.recorder.record_live_audio_latency(dt_speech)
             self.speaking = True
+            self._set_micro("speaking", pulse=True, tool_intent="")
         elif etype in (
             "session.output_audio.done",
             "session.output_audio.stopped",
@@ -570,6 +620,8 @@ class OpenAILiveBrain:
             "session.response.done",
         ):
             self.speaking = False
+            if not self.busy:
+                self._set_micro("idle", tool_intent="")
 
         # --- Client Delegation Trigger from gpt-live-1.1 -> brain ---
         elif etype == "session.delegation.created":
@@ -707,6 +759,77 @@ class OpenAILiveBrain:
     # 2. Delegated Reasoning + Vision Brain (OpenAI /v1/responses + Native Tools)
     # ------------------------------------------------------------------
 
+    def _handle_stream_event(self, ev_type: str, ev_data: dict[str, Any], phase_hint: str) -> None:
+        """Update zero-latency micro-states directly from OpenAI /v1/responses SSE deltas."""
+        if ev_type in ("response.created", "response.in_progress"):
+            self._set_micro(phase_hint)
+        elif "reasoning" in ev_type and ev_type.endswith(".delta"):
+            # True thinking delta -> pulses eye vertices & reflective drift!
+            self._set_micro("deep_thinking", pulse=True)
+        elif ev_type == "response.output_item.added":
+            item = ev_data.get("item") if isinstance(ev_data.get("item"), dict) else {}
+            if item.get("type") == "function_call":
+                fname = str(item.get("name") or "")
+                self._set_micro("tool_intent", pulse=True, tool_intent=fname)
+                # Pre-signal HiLight intent ~400ms before round 1 even completes!
+                if fname == "look_at_desk" and self.on_light:
+                    self.on_light("curious")
+            elif item.get("type") == "reasoning":
+                self._set_micro("deep_thinking", pulse=True)
+        elif ev_type == "response.function_call_arguments.delta":
+            self._set_micro("tool_intent", pulse=True)
+        elif ev_type == "response.output_text.delta":
+            # Brain started formulating spoken reply -> snap gaze back to user ~500ms before speech!
+            self._set_micro("formulating", pulse=True)
+
+    async def _post_responses_stream(
+        self,
+        client: httpx.AsyncClient,
+        req_body: dict[str, Any],
+        *,
+        phase_hint: str = "thinking",
+    ) -> dict[str, Any]:
+        """POST /v1/responses with SSE streaming (0ms overhead vs non-streaming, live thinking/tool/text deltas)."""
+        stream_body = {**req_body, "stream": True}
+        self._set_micro(phase_hint, tool_intent="")
+        final_payload: dict[str, Any] | None = None
+        fallback_text: list[str] = []
+
+        async with client.stream("POST", "/responses", json=stream_body) as resp:
+            if resp.status_code >= 400:
+                body_txt = (await resp.aread()).decode("utf-8", errors="ignore")
+                raise httpx.HTTPStatusError(
+                    f"HTTP {resp.status_code}: {body_txt[:240]}",
+                    request=resp.request,
+                    response=resp,
+                )
+            cur_ev = ""
+            async for line in resp.aiter_lines():
+                if line.startswith("event: "):
+                    cur_ev = line[7:].strip()
+                elif line.startswith("data: "):
+                    raw = line[6:].strip()
+                    if not raw or raw == "[DONE]":
+                        continue
+                    try:
+                        ev_data = json.loads(raw)
+                    except Exception:
+                        continue
+                    ev_type = str(ev_data.get("type") or cur_ev)
+                    self._handle_stream_event(ev_type, ev_data, phase_hint)
+                    if ev_type == "response.output_text.delta":
+                        delta = str(ev_data.get("delta") or "")
+                        if delta:
+                            fallback_text.append(delta)
+                    elif ev_type in ("response.completed", "response.done"):
+                        r_obj = ev_data.get("response")
+                        if isinstance(r_obj, dict):
+                            final_payload = r_obj
+
+        if final_payload is not None:
+            return final_payload
+        return {"id": None, "output": [], "output_text": "".join(fallback_text).strip()}
+
     def _build_reasoning_param(self) -> dict[str, str]:
         effort = self.reasoning_effort
         if self.brain_model in MODELS_MIN_LOW_EFFORT and effort in ("none", "minimal"):
@@ -793,15 +916,18 @@ class OpenAILiveBrain:
                 req_body["previous_response_id"] = self._previous_response_id
 
             t_r1 = time.monotonic()
-            resp = await client.post("/responses", json=req_body)
-            if resp.status_code == 400 and self._previous_response_id:
-                # Stale previous_response_id fallback
-                self._previous_response_id = None
-                req_body.pop("previous_response_id", None)
-                resp = await client.post("/responses", json=req_body)
-            resp.raise_for_status()
+            r1_phase = "reading_sheet" if is_desk else "thinking"
+            try:
+                data = await self._post_responses_stream(client, req_body, phase_hint=r1_phase)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 400 and self._previous_response_id:
+                    # Stale previous_response_id fallback
+                    self._previous_response_id = None
+                    req_body.pop("previous_response_id", None)
+                    data = await self._post_responses_stream(client, req_body, phase_hint=r1_phase)
+                else:
+                    raise
             round1_ms = round((time.monotonic() - t_r1) * 1000.0, 1)
-            data = resp.json()
             self._previous_response_id = data.get("id")
 
             reply_text, calls = extract_responses_text_and_calls(data)
@@ -902,10 +1028,10 @@ class OpenAILiveBrain:
                     "store": True,
                 }
                 t_r2 = time.monotonic()
-                resp2 = await client.post("/responses", json=follow_body)
-                resp2.raise_for_status()
+                called_desk = any(c.get("name") == "look_at_desk" for c in calls)
+                r2_phase = "reading_sheet" if (called_desk or is_desk) else "thinking"
+                data2 = await self._post_responses_stream(client, follow_body, phase_hint=r2_phase)
                 round2_ms += round((time.monotonic() - t_r2) * 1000.0, 1)
-                data2 = resp2.json()
                 self._previous_response_id = data2.get("id")
                 reply_text, calls = extract_responses_text_and_calls(data2)
 
@@ -968,3 +1094,5 @@ class OpenAILiveBrain:
             )
         finally:
             self.busy = False
+            if not self.speaking:
+                self._set_micro("idle", tool_intent="")
