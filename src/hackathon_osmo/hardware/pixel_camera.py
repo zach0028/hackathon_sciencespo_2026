@@ -27,11 +27,8 @@ class AdbDevice:
 
 
 def find_adb() -> str | None:
-    return shutil.which("adb") or (
-        "/Users/zacharieelbaz/Library/Android/sdk/platform-tools/adb"
-        if Path("/Users/zacharieelbaz/Library/Android/sdk/platform-tools/adb").exists()
-        else None
-    )
+    fallback = Path.home() / "Library" / "Android" / "sdk" / "platform-tools" / "adb"
+    return shutil.which("adb") or (str(fallback) if fallback.exists() else None)
 
 
 def find_scrcpy() -> str | None:

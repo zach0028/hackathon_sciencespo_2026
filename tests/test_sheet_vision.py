@@ -86,7 +86,7 @@ def test_prepare_vision_jpeg_passthrough_avoids_double_compression() -> None:
 
 def test_pixel_camera_caches_scrcpy_server_push_per_serial() -> None:
     PixelCameraStream._pushed_devices.clear()
-    cam = PixelCameraStream(serial="10.214.131.8:5555")
+    cam = PixelCameraStream(serial="192.0.2.10:5555")
     cam._adb = "/usr/local/bin/adb"
     with patch("hackathon_osmo.hardware.pixel_camera.subprocess.run", return_value=MagicMock(returncode=0)) as m_run:
         cam._ensure_server_pushed("/tmp/scrcpy-server", "5.0.1")
