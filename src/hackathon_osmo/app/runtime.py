@@ -193,17 +193,11 @@ class StudioRuntime:
             self.arbiter.log("CALIB", f"Erreur lecture calibration.json : {exc}")
 
     async def recenter_landscape(self) -> None:
-        """Recenter gimbal to neutral level position, ensuring Landscape orientation by default."""
+        """Recenter gimbal cleanly to neutral level position (never surprise-flip 90° Portrait!)."""
         self.arbiter.ai_hold_mode = False
         if not self._osmo or not self.osmo_connected:
             return
-        self._hw_busy_until = time.monotonic() + 2.6
-        is_land = self._osmo.is_landscape()
-        if is_land is False and (time.monotonic() - self._last_orient_toggle_t) > 3.5:
-            self._last_orient_toggle_t = time.monotonic()
-            self.arbiter.log("OSMO", "Nacelle en portrait détectée → bascule automatique en Paysage")
-            await self._osmo.send_toggle_orientation()
-            await asyncio.sleep(1.3)
+        self._hw_busy_until = time.monotonic() + 1.5
         self.arbiter.log("OSMO", "Recentrage matériel en format Paysage (CmdId 0x4C)")
         await self._osmo.send_recenter()
         self.rotate_deg = self.arbiter.config.cal_rotate_deg
@@ -1324,9 +1318,12 @@ class StudioRuntime:
         if name == "express":
             gesture = str(args.get("gesture", "none"))
             led = str(args.get("led", "none"))
-            self._last_expr_t = time.monotonic()
+            now_expr = time.monotonic()
+            # Prevent double-firing when auto-micro-expression just triggered a gesture < 2.5s ago
             if gesture != "none" and gesture in GESTURES:
-                self.arbiter.trigger_gesture(gesture)
+                if (now_expr - self._last_expr_t) >= 2.5 and not self.arbiter.latest.active_gesture:
+                    self._last_expr_t = now_expr
+                    self.arbiter.trigger_gesture(gesture)
             if led != "none" and self.hilight.connected:
                 self.hilight.start_reaction(led)
                 self.arbiter.log("HILIGHT", f"Outil IA → LED HiLight : {led}")

@@ -55,16 +55,16 @@ GEMINI_LIVE_WS_URL = (
 )
 
 GEMINI_LIVE_MODEL = "gemini-3.8-live"
-GEMINI_DEFAULT_BRAIN_MODEL = "gemini-4-neon"
+GEMINI_DEFAULT_BRAIN_MODEL = "gemini-4-hydrogen"
 GEMINI_DEFAULT_VOICE = "Charon"
 GEMINI_DEFAULT_EFFORT = "low"
 
 GEMINI_BRAIN_MODELS = [
-    {"id": "gemini-4-neon", "label": "GEMINI 4 NEON (4K · Default)"},
-    {"id": "gemini-4-hydrogen", "label": "GEMINI 4 HYDROGEN (Fast)"},
-    {"id": "gemini-4-argon", "label": "GEMINI 4 ARGON (Deep)"},
+    {"id": "gemini-4-hydrogen", "label": "GEMINI 4 HYDROGEN (4K · 2x Faster)"},
+    {"id": "gemini-4-neon", "label": "GEMINI 4 NEON (4K · Deep)"},
+    {"id": "gemini-4-argon", "label": "GEMINI 4 ARGON (Reasoning)"},
     {"id": "gemini-4-carbon", "label": "GEMINI 4 CARBON (Frontier)"},
-    {"id": "gemini-3.8-flash", "label": "GEMINI 3.8 FLASH (Ultra-Fast)"},
+    {"id": "gemini-3.8-flash", "label": "GEMINI 3.8 FLASH"},
 ]
 
 GEMINI_LIVE_VOICES = [
@@ -383,12 +383,10 @@ class GeminiLiveBrain:
         self._set_micro("idle", tool_intent="")
 
     def _thinking_config(self) -> dict[str, Any]:
-        # Gemini 4 models support low | medium | high (not minimal)
+        # Gemini 4 models support low | medium | high (minimal returns HTTP 400 on both 4-* and 3.8-flash)
         lvl = self.reasoning_effort if self.reasoning_effort in ("low", "medium", "high") else "low"
         if self.brain_model.startswith("gemini-4"):
             return {"thinkingLevel": lvl}
-        if self.brain_model == "gemini-3.8-flash":
-            return {"thinkingLevel": "minimal" if lvl == "low" else lvl}
         return {}
 
     # ------------------------------------------------------------------
@@ -811,12 +809,15 @@ class GeminiLiveBrain:
             self._last_activity_t = time.monotonic()
             t0 = time.monotonic()
             responses: list[dict[str, Any]] = []
+            batch_tools: list[str] = []
             try:
                 for fc in fcalls:
                     call_id = str(fc.get("id") or "")
                     name = str(fc.get("name") or "")
                     args = dict(fc.get("args") or {})
-                    turn_tools.append(f"{name}({', '.join(f'{k}={v}' for k, v in args.items())})")
+                    sig = f"{name}({', '.join(f'{k}={v}' for k, v in args.items())})"
+                    turn_tools.append(sig)
+                    batch_tools.append(sig)
 
                     # Immediate speculative pre-warm + organic Pixel 3D CAD micro-state!
                     if name == "show_on_screen" and args.get("face_user") and self.on_prewarm:
@@ -897,7 +898,7 @@ class GeminiLiveBrain:
                     await self._send_gemini_json({"toolResponse": {"functionResponses": responses}})
                     dt_ms = round((time.monotonic() - t0) * 1000.0, 1)
                     self.last_brain_ms = dt_ms
-                    self._log("GEMINI", f"Outils Live exécutés en {dt_ms:.0f}ms : {', '.join(turn_tools[-len(responses):])}")
+                    self._log("GEMINI", f"Outils Live exécutés en {dt_ms:.0f}ms : {', '.join(batch_tools)}")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

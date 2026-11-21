@@ -114,12 +114,12 @@ GESTURES: dict[str, tuple[str, list[GestureStep]]] = {
     "nod_yes": (
         "Hochement OUI (haut / bas)",
         [
-            # Two crisp, unmistakable vertical nods safely inside OM3's -20°..+30° mechanical limits (zero end-stop slam!)
-            GestureStep(0.0, -72.0, 0.0, 0.30),
-            GestureStep(0.0, +76.0, 0.0, 0.32),
-            GestureStep(0.0, -74.0, 0.0, 0.31),
-            GestureStep(0.0, +74.0, 0.0, 0.31),
-            GestureStep(0.0, -25.0, 0.0, 0.11),
+            # Two smooth vertical nods (<=46 deg/s) — expressive while cutting OM3 pitch current spike in half!
+            GestureStep(0.0, -42.0, 0.0, 0.28),
+            GestureStep(0.0, +46.0, 0.0, 0.30),
+            GestureStep(0.0, -44.0, 0.0, 0.28),
+            GestureStep(0.0, +44.0, 0.0, 0.28),
+            GestureStep(0.0, -18.0, 0.0, 0.12),
             GestureStep(0.0, 0.0, 0.0, 0.12),
         ],
     ),
