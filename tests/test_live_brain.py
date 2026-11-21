@@ -75,7 +75,7 @@ def test_prepare_vision_jpeg_downscales_standard_and_keeps_hd() -> None:
     low_img = cv2.imdecode(np.frombuffer(low_bytes, np.uint8), cv2.IMREAD_COLOR)
     hd_img = cv2.imdecode(np.frombuffer(hd_bytes, np.uint8), cv2.IMREAD_COLOR)
     assert max(low_img.shape[:2]) == 640
-    assert max(hd_img.shape[:2]) == 2048
+    assert max(hd_img.shape[:2]) == 1600
 
 
 def test_reasoning_param_enforces_model_floor() -> None:

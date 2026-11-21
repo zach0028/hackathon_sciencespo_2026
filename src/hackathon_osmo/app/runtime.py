@@ -30,7 +30,12 @@ from hackathon_osmo.hardware.pixel_hilight import PixelHiLight
 from hackathon_osmo.paths import CALIBRATION_FILE
 from hackathon_osmo.telemetry.recorder import SessionRecorder
 from hackathon_osmo.vision.face import AppleVisionFaceDetector, FaceBox
-from hackathon_osmo.vision.sheet import AppleVisionSheetDetector, SheetDetection
+from hackathon_osmo.vision.sheet import (
+    AppleVisionSheetDetector,
+    SheetDetection,
+    compute_sharpness,
+    prepare_desk_reading_image,
+)
 
 
 class StudioRuntime:
@@ -52,15 +57,17 @@ class StudioRuntime:
         self.desk_pose: dict[str, Any] = {
             "pitch_deg": 49.3,
             "pan_roll_deg": -46.7,
-            "pivot_deg": 180.0,
+            "pivot_deg": 135.0,
             "width": 2688,
             "height": 1512,
             "bitrate": 16_000_000,
             "default_zoom": 1.0,
+            "ocr_rotate_deg": 270,
         }
         self._face_quat: tuple[float, float, float, float] | None = None
         self._last_pivot_dir: float = 1.0
         self._camera_gen: int = 0
+        self._frame_gen: int = 0
         self._frame_ready_event = asyncio.Event()
 
         self.recorder = SessionRecorder()
@@ -170,22 +177,84 @@ class StudioRuntime:
         if self.hilight.connected:
             self.hilight.start_reaction(reaction)
 
-    def _get_latest_frame_jpeg(self, high_res: bool = False) -> bytes | None:
-        """Encode the latest native camera frame on demand (up to 2048px q=90 in high_res OCR mode)."""
-        raw = self._latest_raw_bgr
+    def _get_latest_frame_jpeg(
+        self,
+        high_res: bool = False,
+        *,
+        frame_bgr: np.ndarray | None = None,
+    ) -> bytes | None:
+        """Encode camera frame on demand.
+
+        In desk mode (high_res=True): auto-orients handwriting upright (ocr_rotate_deg=270, 90° CCW),
+        smart-crops around the detected sheet on wide/1x shots (zero clipping on >=1.5x zoom),
+        and applies gentle unsharp clarity boost at 1600px q=88 for crisp & fast Vision OCR.
+        """
+        raw = frame_bgr if frame_bgr is not None else self._latest_raw_bgr
         if raw is None:
             return None
-        h, w = raw.shape[:2]
-        max_dim = 2048 if high_res else 640
-        quality = 90 if high_res else 75
+
+        img = raw
+        if high_res and self.arbiter.desk_mode:
+            ocr_rot = int(self.desk_pose.get("ocr_rotate_deg", 270))
+            img, _cropped = prepare_desk_reading_image(
+                raw,
+                rotate_deg=ocr_rot,
+                sheet=self._latest_sheet,
+                auto_crop=(self.camera_zoom <= 1.25),
+                enhance=True,
+            )
+
+        h, w = img.shape[:2]
+        max_dim = 1600 if high_res else 640
+        quality = 88 if high_res else 75
         scale = min(1.0, max_dim / max(1, max(h, w)))
-        img = (
-            cv2.resize(raw, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
-            if scale < 0.99
-            else raw
-        )
+        if scale < 0.99:
+            img = cv2.resize(
+                img,
+                (max(1, int(w * scale)), max(1, int(h * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
         ok, enc = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
         return enc.tobytes() if ok else None
+
+    async def _wait_sharp_frame(
+        self,
+        *,
+        max_wait_s: float = 0.85,
+        min_wait_s: float = 0.16,
+        sharp_ok: float = 35.0,
+        sharp_instant: float = 95.0,
+    ) -> tuple[np.ndarray | None, float]:
+        """Autofocus sharpness gate: sample frames until Laplacian variance peaks & locks.
+
+        Prevents sending blurry AF-hunting frames (e.g. lap=1.6 right after 2x optical switch)
+        while returning quickly (~160-220ms) when focus is already crisp.
+        """
+        t0 = time.monotonic()
+        best_frame: np.ndarray | None = None
+        best_lap = -1.0
+        good_streak = 0
+
+        while True:
+            raw = self._latest_raw_bgr
+            if raw is not None:
+                lap = await asyncio.to_thread(compute_sharpness, raw)
+                if lap > best_lap:
+                    best_lap = lap
+                    best_frame = raw.copy()
+                elapsed = time.monotonic() - t0
+                if lap >= sharp_instant and elapsed >= min_wait_s:
+                    return best_frame, round(best_lap, 1)
+                if lap >= sharp_ok:
+                    good_streak += 1
+                    if good_streak >= 2 and elapsed >= min_wait_s:
+                        return best_frame, round(best_lap, 1)
+                else:
+                    good_streak = 0
+
+            if time.monotonic() - t0 >= max_wait_s:
+                return best_frame, round(max(0.0, best_lap), 1)
+            await asyncio.sleep(0.055)
 
     def _get_robot_context(self) -> str:
         interp = self.arbiter.latest
@@ -308,7 +377,7 @@ class StudioRuntime:
                 break
 
             cmd_dir = sign_for_pos_err if err > 0 else -sign_for_pos_err
-            spd = max(18.0, min(68.0, abs_err * 2.4))
+            spd = max(20.0, min(78.0, abs_err * 2.7))
             await self._send_body_speed(0.0, cmd_dir * spd)
             # Dead-reckon pitch between 1 Hz IMU packets (negative body tilt increases pitch)
             est_pitch += (-cmd_dir * spd * 0.72) * dt
@@ -319,24 +388,22 @@ class StudioRuntime:
 
     async def _pivot_pan_relative_quat(
         self,
-        target_deg: float = 155.0,
+        target_deg: float = 135.0,
         timeout_s: float = 4.5,
         *,
         allow_reverse: bool = False,
+        overlap_pitch_target: float | None = None,
     ) -> float:
         """Rotate horizontal Pan LEFT (default desk direction) using OM3's 1 Hz quaternion IMU + dead-reckoning.
 
-        Key insight discovered from Flight Recorder (imu_trace.jsonl):
-        - OM3 sends IMU quaternion updates at ~1 Hz (every ~1.0s).
-        - Previously, a 0.45s stall timeout fired BEFORE the 2nd 1 Hz IMU packet arrived, causing a false reversal to the RIGHT!
-        - Fix: only detect a mechanical endstop when 2 CONSECUTIVE fresh IMU packets show < 2° progress,
-          and interpolate angle between 1 Hz packets so we stop crisply at target_deg on the LEFT!
+        When overlap_pitch_target is provided, smoothly begins pitching DOWN during the final 38°
+        of horizontal pan so the camera arrives at the desk ~0.8s faster!
         """
         if not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
             return 0.0
         q_start = self._osmo.last_attitude.quat
         if q_start is None:
-            await self.arbiter.move_relative_deg(target_deg, 0.0, speed_dps=75.0, hold_after=True)
+            await self.arbiter.move_relative_deg(target_deg, 0.0, speed_dps=85.0, hold_after=True)
             return target_deg
 
         stop_deg = max(30.0, min(174.0, float(target_deg) - 4.0))
@@ -345,6 +412,7 @@ class StudioRuntime:
         last_imu_ts = self._osmo.last_attitude.updated_at
         last_imu_turned = 0.0
         est_turned = 0.0
+        est_pitch = self._osmo.last_attitude.pitch_deg
         stalled_packets = 0
         last_t = time.monotonic()
         deadline = last_t + timeout_s
@@ -365,6 +433,7 @@ class StudioRuntime:
                 real_turned = quat_angle_deg(q_start, att.quat)
                 progress = abs(real_turned - last_imu_turned)
                 est_turned = real_turned
+                est_pitch = att.pitch_deg
                 if progress < 2.5 and real_turned > 10.0:
                     stalled_packets += 1
                 else:
@@ -385,8 +454,18 @@ class StudioRuntime:
                 break
 
             remaining = max(0.0, target_deg - est_turned)
-            spd = max(24.0, min(88.0, remaining * 2.2))
-            await self._send_body_speed(direction * spd, 0.0)
+            spd = max(26.0, min(108.0, remaining * 2.5))
+
+            # Parallel pitch overlap during final 38° of pan (negative body tilt increases downward IMU pitch)
+            tilt_cmd = 0.0
+            if overlap_pitch_target is not None and remaining <= 38.0:
+                p_err = overlap_pitch_target - est_pitch
+                if p_err > 4.0:
+                    p_spd = max(18.0, min(68.0, p_err * 2.2))
+                    tilt_cmd = -p_spd
+                    est_pitch += (p_spd * 0.72) * dt
+
+            await self._send_body_speed(direction * spd, tilt_cmd)
             # Dead-reckon pan angle between 1 Hz IMU packets (empirical gain ~0.85)
             est_turned += spd * 0.85 * dt
             await asyncio.sleep(0.05)
@@ -436,7 +515,7 @@ class StudioRuntime:
             if est_dist <= 8.0:
                 break
 
-            spd = max(22.0, min(88.0, est_dist * 2.2))
+            spd = max(24.0, min(108.0, est_dist * 2.5))
             await self._send_body_speed(direction * spd, 0.0)
             est_dist = max(0.0, est_dist - spd * 0.85 * dt)
             await asyncio.sleep(0.05)
@@ -551,21 +630,30 @@ class StudioRuntime:
             "CAMERA",
             f"Optique {new_facing.upper()} {new_w}x{new_h} · zoom={new_zoom:.2f}x",
         )
-        self._frame_ready_event.clear()
+        # Generation-synchronized switch: increment generation & stop old stream BEFORE clearing event
+        # so _camera_loop can NEVER wake us with a stale frame from the previous zoom/facing!
         self._camera_gen += 1
+        target_gen = self._camera_gen
         await asyncio.to_thread(self._stop_camera_sync)
+        self._frame_ready_event.clear()
 
         if wait_frame:
-            try:
-                await asyncio.wait_for(self._frame_ready_event.wait(), timeout=4.5)
-                await asyncio.sleep(0.18)  # let auto-exposure/autofocus settle
-                return True
-            except asyncio.TimeoutError:
-                return False
+            deadline = time.monotonic() + 5.0
+            while self._frame_gen < target_gen:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                try:
+                    await asyncio.wait_for(self._frame_ready_event.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    return False
+                if self._frame_gen < target_gen:
+                    self._frame_ready_event.clear()
+            return True
         return True
 
     def _detect_sheet_sync(self, bgr: np.ndarray) -> SheetDetection:
-        """Run Apple Vision rectangle + text detector on a fast 960px copy of the frame."""
+        """Run Apple Vision neural document segmentation + text detector on a fast 960px copy."""
         h, w = bgr.shape[:2]
         scale = min(1.0, 960.0 / max(1, max(h, w)))
         small = (
@@ -582,16 +670,16 @@ class StudioRuntime:
         auto_target: bool = True,
         ultra_hd: bool = False,
     ) -> dict[str, Any]:
-        """Full Desk Reading transition (connected to IMU pan/pitch + Apple Vision Sheet):
-        1. If not already on desk: closed-loop IMU servo on true pan (roll_deg) + pitch_deg in parallel with rear HD/4K startup
+        """Full Desk Reading transition (connected to IMU pan/pitch + Apple Vision Document Segmentation):
+        1. If not already on desk: geodesic left Pan pivot + overlapped downward Pitch servo in parallel with rear HD/4K startup
         2. If already on desk: zero pivot, zero camera restart unless zoom or 4K actually changed!
-        3. Apple Vision sheet/text detection -> mechanical centering -> smart optical zoom (0.51x..5x)
-        4. Returns razor-sharp HD image (up to 2048px) + pre-extracted OCR lines.
+        3. Autofocus Laplacian sharpness gate -> 6ms Apple Vision document segmentation -> mechanical centering -> smart upright crop
+        4. Returns razor-sharp upright HD image (1600px q=88, auto-oriented 90° CCW) + pre-extracted OCR lines.
         """
         # Desk sheet is ALWAYS downward (+30°..+65°, calibrated mean +49.3° on OM3 IMU) — never upward/ceiling!
         raw_target_pitch = float(self.desk_pose.get("pitch_deg", 49.3))
         target_pitch = max(30.0, min(65.0, abs(raw_target_pitch)))
-        pivot_deg = float(self.desk_pose.get("pivot_deg", 180.0))
+        pivot_deg = float(self.desk_pose.get("pivot_deg", 135.0))
         req_w, req_h = (3840, 2160) if ultra_hd else (
             int(self.desk_pose.get("width", 2688)),
             int(self.desk_pose.get("height", 1512)),
@@ -618,23 +706,27 @@ class StudioRuntime:
             if already_on_desk or not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
                 return (att.roll_deg if att else None, att.pitch_deg if att else None)
 
-            self._hw_busy_until = time.monotonic() + 9.5
+            self._hw_busy_until = time.monotonic() + 8.5
             try:
                 if self._osmo.is_landscape() is False:
                     await self._osmo.send_toggle_orientation()
                     await asyncio.sleep(1.0)
-                # Level pitch briefly before 180° horizontal pan so quaternion rotation stays pure horizontal
+                # Level pitch briefly before horizontal pan so quaternion rotation stays pure horizontal
                 face_pitch = float(self.face_pose.get("pitch_deg", 5.0))
                 if abs(self._osmo.last_attitude.pitch_deg - face_pitch) > 15.0:
-                    await self._servo_pitch_to_imu(face_pitch, timeout_s=1.8)
+                    await self._servo_pitch_to_imu(face_pitch, timeout_s=1.5)
                 # Save exact head alignment quaternion so return_to_face_mode comes straight back to the user!
                 self._face_quat = self._osmo.last_attitude.quat
                 self.arbiter.log(
                     "ARM",
                     f"Pivot géodésique {pivot_deg:.0f}° aligné sur la tête → Pitch feuille {target_pitch:+.1f}°",
                 )
-                turned = await self._pivot_pan_relative_quat(pivot_deg)
-                final_pitch = await self._servo_pitch_to_imu(target_pitch)
+                # Overlap downward pitch during final 38° of left pan (~0.8s faster!)
+                turned = await self._pivot_pan_relative_quat(
+                    pivot_deg,
+                    overlap_pitch_target=target_pitch,
+                )
+                final_pitch = await self._servo_pitch_to_imu(target_pitch, timeout_s=2.6)
                 self.arbiter.log("ARM", f"Pivot terminé : ΔPan={turned:.0f}°, Pitch={final_pitch or 0:+.1f}°")
                 return (self._osmo.last_attitude.roll_deg if self._osmo.last_attitude else None), final_pitch
             finally:
@@ -654,45 +746,53 @@ class StudioRuntime:
         arm_task = asyncio.create_task(_pivot_arm())
         cam_ok, (final_pan, final_pitch) = await asyncio.gather(cam_task, arm_task)
 
-        if not already_on_desk:
-            await asyncio.sleep(0.25)
+        # Autofocus sharpness gate: guarantees crisp frame (never blurry AF-hunting like lap=1.6!)
+        sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.85, min_wait_s=0.16)
 
         sheet = SheetDetection()
         auto_zoom_applied = self.camera_zoom
 
-        if auto_target and self._latest_raw_bgr is not None:
-            sheet = await asyncio.to_thread(self._detect_sheet_sync, self._latest_raw_bgr)
+        if auto_target and sharp_frame is not None:
+            sheet = await asyncio.to_thread(self._detect_sheet_sync, sharp_frame)
             self._latest_sheet = sheet
 
             # If no sheet seen at 1.0x and user didn't force a zoom, widen to 0.51x ultra-wide to survey the desk!
             if not sheet.found and zoom is None and self.camera_zoom > 0.6:
                 self.arbiter.log("SHEET", "Aucune feuille vue en 1x → passage ultra grand-angle 0.51x pour scanner le bureau")
                 await self.configure_camera(facing="back", zoom=0.51, width=req_w, height=req_h, wait_frame=True)
-                await asyncio.sleep(0.25)
-                if self._latest_raw_bgr is not None:
-                    sheet = await asyncio.to_thread(self._detect_sheet_sync, self._latest_raw_bgr)
+                sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.75, min_wait_s=0.16)
+                if sharp_frame is not None:
+                    sheet = await asyncio.to_thread(self._detect_sheet_sync, sharp_frame)
                     self._latest_sheet = sheet
 
             if sheet.found:
-                # 1. Mechanical auto-centering onto the sheet center (using rear-camera FOV ~ 65°/zoom)
+                # 1. Mechanical auto-centering onto the sheet center (with downward pitch safety clamp!)
                 err_x = sheet.cx - 0.5
                 err_y = sheet.cy - 0.5
                 fov_h = 65.0 / max(0.5, self.camera_zoom)
                 fov_v = 40.0 / max(0.5, self.camera_zoom)
-                if abs(err_x) > 0.12 or abs(err_y) > 0.12:
-                    pan_corr = max(-35.0, min(35.0, err_x * fov_h * 0.75))
-                    tilt_corr = max(-22.0, min(22.0, err_y * fov_v * 0.75))
+                if abs(err_x) > 0.10 or abs(err_y) > 0.10:
+                    pan_corr = max(-28.0, min(28.0, err_x * fov_h * 0.72))
+                    tilt_corr = max(-16.0, min(16.0, err_y * fov_v * 0.72))
+                    # Safety guard: never tilt upward above +30° desk bound (prevents ceiling drift!)
+                    cur_pitch = self._osmo.last_attitude.pitch_deg if (self._osmo and self._osmo.last_attitude) else target_pitch
+                    if cur_pitch - tilt_corr < 30.0:
+                        tilt_corr = min(0.0, tilt_corr)
                     self.arbiter.log(
                         "SHEET",
-                        f"Feuille détectée à ({sheet.cx:.2f}, {sheet.cy:.2f}) → ciblage bras ({pan_corr:+.0f}°, {tilt_corr:+.0f}°)",
+                        f"Feuille [{sheet.source} {sheet.confidence:.2f}] à ({sheet.cx:.2f}, {sheet.cy:.2f}) → ciblage bras ({pan_corr:+.0f}°, {tilt_corr:+.0f}°)",
                     )
-                    await self.arbiter.move_relative_deg(pan_corr, tilt_corr, speed_dps=42.0, hold_after=True)
-                    await asyncio.sleep(0.25)
+                    await self.arbiter.move_relative_deg(pan_corr, tilt_corr, speed_dps=48.0, hold_after=True)
+                    sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.55, min_wait_s=0.14)
+                    if sharp_frame is not None:
+                        sheet = await asyncio.to_thread(self._detect_sheet_sync, sharp_frame)
+                        self._latest_sheet = sheet
 
-                # 2. Automatic optical lens selection if zoom was not explicitly pinned
-                if zoom is None:
+                # 2. Automatic optical lens zoom ONLY when sheet is genuinely tiny (e.g. card / far note, span < 0.28)
+                # For normal notebooks (span >= 0.28), 2688x1512 + upright smart crop is already razor sharp with 0s camera restart!
+                if zoom is None and max(sheet.w, sheet.h) < 0.28:
                     span = max(sheet.w, sheet.h, 0.12)
-                    desired_z = self.camera_zoom * (0.62 / span)
+                    desired_z = self.camera_zoom * (0.55 / span)
                     if desired_z >= 3.8:
                         chosen_z = 5.0
                     elif desired_z >= 2.4:
@@ -701,22 +801,22 @@ class StudioRuntime:
                         chosen_z = 2.0
                     else:
                         chosen_z = 1.0
-                    if abs(chosen_z - self.camera_zoom) >= 0.35:
+                    if abs(chosen_z - self.camera_zoom) >= 0.4:
                         self.arbiter.log(
                             "SHEET",
-                            f"Auto-zoom optique sur la feuille : {self.camera_zoom:.2f}x → {chosen_z:.1f}x",
+                            f"Auto-zoom optique sur petit support : {self.camera_zoom:.2f}x → {chosen_z:.1f}x",
                         )
                         await self.configure_camera(facing="back", zoom=chosen_z, width=req_w, height=req_h, wait_frame=True)
-                        await asyncio.sleep(0.25)
+                        sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.85, min_wait_s=0.18)
                         auto_zoom_applied = self.camera_zoom
-                        if self._latest_raw_bgr is not None:
-                            sheet = await asyncio.to_thread(self._detect_sheet_sync, self._latest_raw_bgr)
+                        if sharp_frame is not None:
+                            sheet = await asyncio.to_thread(self._detect_sheet_sync, sharp_frame)
                             self._latest_sheet = sheet
 
         if self.hilight.connected:
             self.hilight.start_reaction("sheet_locked" if sheet.found else "desk")
 
-        jpeg_hd = self._get_latest_frame_jpeg(high_res=True)
+        jpeg_hd = self._get_latest_frame_jpeg(high_res=True, frame_bgr=sharp_frame)
         att_now = self._osmo.last_attitude if self._osmo else None
         res: dict[str, Any] = {
             "ok": True,
@@ -724,7 +824,9 @@ class StudioRuntime:
             "camera_ready": cam_ok,
             "resolution": f"{self.width}x{self.height}",
             "zoom": auto_zoom_applied,
+            "sharpness": sharpness,
             "sheet_detected": sheet.found,
+            "sheet_source": sheet.source,
             "sheet_has_text": sheet.has_text,
             "sheet_ocr_preview": sheet.lines[:8],
             "imu_pan_roll": round(att_now.roll_deg, 1) if att_now else (round(final_pan, 1) if final_pan is not None else None),
@@ -733,7 +835,7 @@ class StudioRuntime:
         if jpeg_hd:
             res["_images"] = [
                 {
-                    "label": f"Feuille caméra arrière ({self.width}x{self.height}, zoom optique {self.camera_zoom:.2f}x)",
+                    "label": f"Feuille redressée HD ({self.width}x{self.height}, zoom {self.camera_zoom:.2f}x, netteté={sharpness:.0f})",
                     "jpeg": jpeg_hd,
                     "detail": "high",
                 }
@@ -741,7 +843,7 @@ class StudioRuntime:
         return res
 
     async def set_camera_zoom(self, zoom: float, *, capture_after: bool = True) -> dict[str, Any]:
-        """Switch Pixel optical/hybrid zoom (0.51x..10x on rear camera) and return a fresh HD frame."""
+        """Switch Pixel optical/hybrid zoom (0.51x..10x on rear camera) and return a fresh sharp HD frame."""
         ok = await self.configure_camera(zoom=zoom, wait_frame=True)
         res: dict[str, Any] = {
             "ok": ok,
@@ -750,12 +852,13 @@ class StudioRuntime:
             "zoom": self.camera_zoom,
         }
         if capture_after:
-            await asyncio.sleep(0.25)
-            jpeg_hd = self._get_latest_frame_jpeg(high_res=True)
+            sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.85, min_wait_s=0.16)
+            res["sharpness"] = sharpness
+            jpeg_hd = self._get_latest_frame_jpeg(high_res=True, frame_bgr=sharp_frame)
             if jpeg_hd:
                 res["_images"] = [
                     {
-                        "label": f"Capture optique {self.facing.upper()} {self.width}x{self.height} zoom {self.camera_zoom:.2f}x",
+                        "label": f"Capture optique {self.facing.upper()} {self.width}x{self.height} zoom {self.camera_zoom:.2f}x (netteté={sharpness:.0f})",
                         "jpeg": jpeg_hd,
                         "detail": "high",
                     }
@@ -766,9 +869,9 @@ class StudioRuntime:
         """Closed-loop return to Dialogue mode synchronized with Apple Vision Face & Search FSM.
 
         1. Switch to front 720p camera + move to calibrated face pose (or recenter Landscape) in parallel
-        2. Reset stale lost-face timers so FSM never triggers a spurious search
+        2. Reset stale lost-face timers & wait for fresh vision tick so tracking_state is NEVER stale 'AI_HOLD'
         3. Verify real Apple Vision face_detected; if missing and search_if_missing=True, run panoramic search until locked!
-        4. Return sensor ground truth + front frame so LLM NEVER hallucinates seeing the user.
+        4. Return sensor ground truth + front frame so LLM NEVER hallucinates seeing the user or makes redundant set_tracking calls.
         """
         self.arbiter.log("ARM", "Retour en mode Dialogue (caméra avant + pose visage + vérif Apple Vision)")
         if self.hilight.connected:
@@ -779,11 +882,11 @@ class StudioRuntime:
                 return
             face_pitch = float(self.face_pose.get("pitch_deg", 5.0))
             if self._face_quat is not None and self._osmo.last_attitude is not None:
-                self._hw_busy_until = time.monotonic() + 8.5
+                self._hw_busy_until = time.monotonic() + 7.5
                 try:
-                    # 1. Lift camera back to head level first, then unwind 180° straight back to user's head!
-                    await self._servo_pitch_to_imu(face_pitch, timeout_s=2.2)
-                    rem = await self._pivot_pan_back_to_quat(self._face_quat, timeout_s=4.5)
+                    # 1. Lift camera back to head level first (safe desk clearance), then fast unwind to user's head!
+                    await self._servo_pitch_to_imu(face_pitch, timeout_s=1.8)
+                    rem = await self._pivot_pan_back_to_quat(self._face_quat, timeout_s=3.8)
                     self.arbiter.log("ARM", f"Retour géodésique sur la tête terminé (écart={rem:.0f}°)")
                 finally:
                     await self._send_body_speed(0.0, 0.0)
@@ -803,14 +906,15 @@ class StudioRuntime:
         self.arbiter.desk_mode = False
         self.arbiter.ai_hold_mode = False
 
-        # Wait up to 1.0s for Apple Vision to detect the user's face
+        # Wait up to 0.9s for BOTH face lock AND fresh FSM state (never stale 'AI_HOLD'/'DESK_MODE'!)
         found = False
-        deadline = time.monotonic() + 1.0
+        deadline = time.monotonic() + 0.9
         while time.monotonic() < deadline:
-            if self.arbiter.latest.face_detected:
+            st = self.arbiter.latest.state
+            if self.arbiter.latest.face_detected and st not in ("AI_HOLD", "DESK_MODE"):
                 found = True
                 break
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
 
         searched = False
         if not found and search_if_missing and self.osmo_connected:
@@ -821,19 +925,24 @@ class StudioRuntime:
             while time.monotonic() < search_deadline:
                 if self.arbiter.latest.face_detected:
                     found = True
-                    await asyncio.sleep(0.25)  # let PID settle on face
+                    await asyncio.sleep(0.22)  # let PID settle on face
                     break
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(0.12)
 
         interp = self.arbiter.latest
+        # Guarantee fresh tracking state string (never stale AI_HOLD after follow_face is already active!)
+        fresh_state = interp.state
+        if fresh_state in ("AI_HOLD", "DESK_MODE"):
+            fresh_state = "CENTERED" if interp.face_detected else "SEARCHING" if searched else "IDLE"
         jpeg = self._get_latest_frame_jpeg(high_res=False)
         res: dict[str, Any] = {
             "ok": True,
             "mode": "dialogue_face",
             "facing": "front",
+            "tracking_active": True,
             "face_detected": bool(interp.face_detected),
             "face_confidence": round(interp.confidence, 2),
-            "tracking_state": interp.state,
+            "tracking_state": fresh_state,
             "searched_for_face": searched,
         }
         if jpeg:
@@ -1115,6 +1224,7 @@ class StudioRuntime:
         frame_times: list[float] = []
         last_ts = 0.0
         last_frame_mono = 0.0
+        stream_gen = -1
         while self._running:
             if self._stream is None:
                 devs = [d for d in list_adb_devices() if d.state == "device"]
@@ -1124,6 +1234,7 @@ class StudioRuntime:
                     continue
                 self.pixel_serial = devs[0].serial
                 self.camera_status = f"starting_{self.facing}"
+                start_gen = self._camera_gen
                 try:
                     stream = PixelCameraStream(
                         serial=self.pixel_serial,
@@ -1135,7 +1246,13 @@ class StudioRuntime:
                         bitrate=self.camera_bitrate,
                     )
                     await asyncio.to_thread(stream.start)
+                    # If another configure_camera happened while starting, drop stale stream cleanly
+                    if start_gen != self._camera_gen:
+                        await asyncio.to_thread(stream.stop)
+                        continue
                     self._stream = stream
+                    stream_gen = start_gen
+                    last_ts = 0.0
                     last_frame_mono = time.monotonic()
                     self.camera_status = f"live_{self.facing}"
                     self.arbiter.log(
@@ -1149,9 +1266,14 @@ class StudioRuntime:
                     await asyncio.sleep(2.0)
                     continue
 
-            raw, ts = self._stream.read()
+            active_stream = self._stream
+            if active_stream is None or stream_gen != self._camera_gen:
+                await asyncio.sleep(0.008)
+                continue
+
+            raw, ts = active_stream.read()
             if raw is None or ts == last_ts:
-                if time.monotonic() - last_frame_mono > 3.5:
+                if stream_gen == self._camera_gen and time.monotonic() - last_frame_mono > 3.5:
                     self.arbiter.log("CAMERA", "Flux caméra interrompu — reconnexion automatique...")
                     await asyncio.to_thread(self._stop_camera_sync)
                     self._fps_actual = 0.0
@@ -1161,8 +1283,12 @@ class StudioRuntime:
             last_ts = ts
             last_frame_mono = time.monotonic()
 
+            if stream_gen != self._camera_gen:
+                continue
+
             img = self._transform_frame(raw)
             self._latest_raw_bgr = img
+            self._frame_gen = stream_gen
             self._frame_ready_event.set()
 
             now = time.monotonic()

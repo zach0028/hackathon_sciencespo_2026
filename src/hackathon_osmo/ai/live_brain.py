@@ -65,7 +65,7 @@ Règles de parole (IMPORTANT) :
 - Parle TOUJOURS en français naturel, oral, fluide et concis (1 à 2 phrases courtes max).
 - Ne dis jamais que tu as un « backend », des « outils » ou une « délégation » : agis comme un seul être robotique vivant.
 - Quand Zach engage simplement la conversation (salutations, petites discussions sans action physique ni question visuelle/complexe), réponds directement avec naturel.
-- Dès que Zach demande une action physique (hocher oui/non, bouger la tête, allumer les LEDs, regarder la feuille/le bureau, recentrer, chercher), demande ce que tu vois ou de lire une feuille/un objet, ou pose une question qui mérite réflexion ou vérification : délègue immédiatement au backend. Tu peux glisser un micro accusé de réception naturel (« Je regarde… », « Voyons ça… ») pendant le traitement.
+- Dès que Zach demande une action physique (hocher oui/non, bouger la tête, allumer les LEDs, regarder la feuille/le bureau, recentrer, chercher), demande ce que tu vois ou de lire une feuille/un objet, ou pose une question qui mérite réflexion ou vérification : délègue immédiatement au backend en glissant tout de suite un très court accusé de réception naturel (2 à 4 mots max : « Je regarde… », « Je pivote dessus… », « Je reviens vers toi… ») pendant que le bras bouge.
 - Dès qu'un commentaire ou résultat arrive du backend, formule-le directement à l'oral de manière vivante et concise.
 """
 
@@ -77,20 +77,20 @@ Règles strictes :
 1. Français oral naturel, direct, concis (1 à 2 phrases max, sans markdown, sans listes).
 2. VÉRITÉ TERRAIN CAPTEURS (CRITIQUE) :
    - Ne dis JAMAIS « je te vois » ou « je suis sur ton visage » si [Capteurs] ou le retour de look_at_user indique face_detected=False ! Dis honnêtement que tu ne le vois pas encore (ou lance look_at_user(search_if_missing=true) pour le chercher).
-   - N'invente jamais un mot illisible sur une feuille : si le texte est trop petit ou flou, zoome avec look_at_desk(zoom=2.0 ou 3.0 ou 5.0, ultra_hd=true).
-3. PRIORITÉ ET USAGE DES 5 OUTILS (évite tout appel inutile pour garder une latence < 2s) :
-   - PRIORITÉ 1 — Réponse directe SANS outil : si tu es DÉJÀ dans le bon mode (ex. mode_bureau=True avec image HD déjà fournie dans ce message) et que Zach te demande de lire la suite, d'expliquer ou de conclure sur ce qui est déjà lisible à l'écran -> réponds DIRECTEMENT sans rappeler look_at_desk !
-   - PRIORITÉ 2 — look_at_desk(zoom, ultra_hd) : UNIQUEMENT pour (a) passer du mode dialogue au mode feuille caméra arrière (pivot géodésique 180° aligné sur la tête + inclinaison vers le BAS à ~+49° sur le bureau + détection feuille + centrage + ring-light), OU (b) changer d'optique/zoom (0.51 ultra grand-angle, 1.0 classique, 2.0/3.0/5.0 zoom optique) ou passer en 4K (ultra_hd=true), OU (c) recentrer sur une nouvelle feuille posée sur le bureau. Rappel physique : une feuille est TOUJOURS posée vers le BAS sur le bureau, jamais au plafond !
-   - PRIORITÉ 3 — look_at_user(search_if_missing) : pour revenir vers Zach (caméra avant + pose visage + vérification Apple Vision ; si search_if_missing=true et aucun visage vu, déclenche automatiquement le balayage panoramique pour le retrouver).
-   - PRIORITÉ 4 — move_arm(pan_deg, tilt_deg, scan_room) : pour ajuster manuellement l'angle du bras (pan < 0 GAUCHE, pan > 0 DROITE, tilt < 0 HAUT, tilt > 0 BAS) ou explorer toute la pièce (scan_room=true).
-   - PRIORITÉ 5 — express(gesture, led) & set_tracking(mode) : en mode dialogue, accompagne tes réponses d'un geste + LED en 1 seul appel (nod_yes+yes, shake_no+no, curious_tilt+curious) ou fige/réactive le suivi visage.
+   - N'invente jamais un mot illisible sur une feuille : les photos bureau sont déjà redressées à l'endroit et recadrées sur le cahier ; si un détail reste vraiment minuscule, zoome avec look_at_desk(zoom=2.0 ou 3.0, ultra_hd=true, retarget_sheet=false).
+3. PRIORITÉ ET USAGE DES 5 OUTILS (évite tout appel inutile pour garder une latence minimale) :
+   - PRIORITÉ 1 — Réponse directe SANS outil : si tu es DÉJÀ dans le bon mode (ex. mode_bureau=True avec image HD redressée déjà fournie dans ce message) et que Zach te demande de lire, corriger ou analyser ce qui est visible -> réponds DIRECTEMENT sans rappeler look_at_desk !
+   - PRIORITÉ 2 — look_at_desk(zoom, ultra_hd, retarget_sheet) : UNIQUEMENT pour (a) passer du mode dialogue au mode feuille caméra arrière (pivot géodésique gauche + inclinaison BAS +49° + autofocus net + détection feuille + recadrage redressé + ring-light), OU (b) changer explicitement d'optique/zoom (0.51 / 1.0 / 2.0 / 3.0 / 5.0) ou passer en 4K, OU (c) recentrer sur une nouvelle feuille. Une feuille est TOUJOURS vers le BAS sur le bureau, jamais au plafond !
+   - PRIORITÉ 3 — look_at_user(search_if_missing) : pour revenir vers Zach (caméra avant + retour tête + vérification Apple Vision + réactivation AUTOMATIQUE du suivi visage follow_face). N'appelle JAMAIS set_tracking(follow_face) après look_at_user : le suivi visage est déjà actif dès le retour !
+   - PRIORITÉ 4 — move_arm(pan_deg, tilt_deg, scan_room) : pour ajuster manuellement l'angle du bras (pan < 0 GAUCHE, pan > 0 DROITE, tilt < 0 HAUT, tilt > 0 BAS) ou explorer la pièce (scan_room=true).
+   - PRIORITÉ 5 — express(gesture, led) & set_tracking(mode) : en mode dialogue, accompagne tes réponses d'un geste + LED en 1 seul appel, ou fige/réactive le suivi visage uniquement si tu es DÉJÀ en caméra avant.
 """
 
 ROBOT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "look_at_user",
-        "description": "Passe ou revient sur le visage de Zach : bascule en caméra avant 720p, recentre la nacelle sur la pose visage, vérifie réellement avec Apple Vision si le visage est détecté, et lance automatiquement un balayage de recherche si search_if_missing=true et aucun visage n'est visible. Retourne face_detected + photo frontale.",
+        "description": "Passe ou revient sur le visage de Zach : bascule en caméra avant 720p, revient sur la tête, RÉACTIVE AUTOMATIQUEMENT le suivi visage (tracking_active=True — inutile d'appeler set_tracking ensuite !), vérifie réellement avec Apple Vision si le visage est détecté, et lance un balayage de recherche si search_if_missing=true et aucun visage n'est visible. Retourne face_detected + photo frontale.",
         "strict": True,
         "parameters": {
             "type": "object",
@@ -203,7 +203,11 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
 
 
 def prepare_vision_jpeg(jpeg_bytes: bytes | None, *, high_res: bool = False) -> bytes | None:
-    """Downscale/re-encode JPEG for Vision (640px standard dialogue, up to 2048px q=90 for OCR/sheets)."""
+    """Downscale/re-encode JPEG for Vision (640px standard dialogue, up to 1600px q=88 for OCR/sheets).
+
+    Avoids redundant decode+re-encode when the image is already within target dimensions,
+    preserving razor-sharp handwriting clarity and saving ~40ms CPU per frame.
+    """
     if not jpeg_bytes:
         return None
     arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
@@ -211,11 +215,12 @@ def prepare_vision_jpeg(jpeg_bytes: bytes | None, *, high_res: bool = False) -> 
     if img is None:
         return jpeg_bytes
     h, w = img.shape[:2]
-    max_dim = 2048 if high_res else 640
-    quality = 90 if high_res else 74
-    scale = min(1.0, max_dim / max(1, max(h, w)))
-    if scale < 0.99:
-        img = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+    max_dim = 1600 if high_res else 640
+    if max(h, w) <= max_dim:
+        return jpeg_bytes
+    quality = 88 if high_res else 74
+    scale = max_dim / max(1, max(h, w))
+    img = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
     ok, enc = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     return enc.tobytes() if ok else jpeg_bytes
 
@@ -321,6 +326,7 @@ class OpenAILiveBrain:
     _sideband_ws: Any = None
     _sideband_task: asyncio.Task[None] | None = None
     _seen_event_ids: deque[str] = field(default_factory=lambda: deque(maxlen=256))
+    _logged_event_types: set[str] = field(default_factory=set)
     _active_delegations: set[asyncio.Task[None]] = field(default_factory=set)
 
     @property
@@ -512,10 +518,14 @@ class OpenAILiveBrain:
                     self.recorder.record_event("LIVE_IN", final)
 
         # --- Real-time output (assistant) transcripts ---
-        elif etype in ("session.output_transcript.delta", "response.audio_transcript.delta"):
+        elif etype in (
+            "session.output_transcript.delta",
+            "response.audio_transcript.delta",
+            "response.output_audio_transcript.delta",
+        ):
             delta = str(event.get("delta") or event.get("text") or "")
             if delta:
-                if not self.speaking and self._last_commentary_sent_t is not None:
+                if self._last_commentary_sent_t is not None:
                     dt_speech = (time.monotonic() - self._last_commentary_sent_t) * 1000.0
                     self._last_commentary_sent_t = None
                     if self.recorder and dt_speech < 10000.0:
@@ -527,6 +537,7 @@ class OpenAILiveBrain:
             "session.output_transcript.done",
             "session.output_transcript.completed",
             "response.audio_transcript.done",
+            "response.output_audio_transcript.done",
         ):
             self.speaking = False
             final = str(event.get("transcript") or event.get("text") or self._bot_transcript_buf).strip()
@@ -537,14 +548,27 @@ class OpenAILiveBrain:
                 if self.recorder:
                     self.recorder.record_event("LIVE_OUT", final)
 
-        elif etype in ("session.output_audio.started", "output_audio_buffer.started"):
+        elif etype in (
+            "session.output_audio.started",
+            "output_audio_buffer.started",
+            "response.output_audio.delta",
+            "response.audio.delta",
+            "session.response.created",
+            "response.created",
+        ):
             if self._last_commentary_sent_t is not None:
                 dt_speech = (time.monotonic() - self._last_commentary_sent_t) * 1000.0
                 self._last_commentary_sent_t = None
                 if self.recorder and dt_speech < 10000.0:
                     self.recorder.record_live_audio_latency(dt_speech)
             self.speaking = True
-        elif etype in ("session.output_audio.done", "session.output_audio.stopped", "output_audio_buffer.stopped"):
+        elif etype in (
+            "session.output_audio.done",
+            "session.output_audio.stopped",
+            "output_audio_buffer.stopped",
+            "response.done",
+            "session.response.done",
+        ):
             self.speaking = False
 
         # --- Client Delegation Trigger from gpt-live-1.1 -> brain ---
@@ -580,6 +604,11 @@ class OpenAILiveBrain:
         elif etype == "error":
             err = event.get("error") or event
             self._log("LIVE", f"Erreur Live API : {err}")
+
+        elif etype and etype not in self._logged_event_types:
+            self._logged_event_types.add(etype)
+            if self.recorder:
+                self.recorder.record_event("LIVE_EVT", f"type={etype}")
 
     def _latest_user_utterance(self) -> str:
         pending = self._user_transcript_buf.strip()
@@ -869,7 +898,7 @@ class OpenAILiveBrain:
                     "input": tool_outputs,
                     "tools": ROBOT_TOOLS,
                     "tool_choice": "none" if rounds >= 2 else "auto",
-                    "max_output_tokens": 350,
+                    "max_output_tokens": 240,
                     "store": True,
                 }
                 t_r2 = time.monotonic()

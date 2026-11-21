@@ -30,6 +30,7 @@
     "width": 2688,
     "height": 1512,
     "bitrate": 16000000,
-    "default_zoom": 1.0
+    "default_zoom": 1.0,
+    "ocr_rotate_deg": 270
   }
 }
