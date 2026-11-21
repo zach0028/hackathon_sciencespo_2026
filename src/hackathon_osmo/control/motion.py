@@ -186,8 +186,9 @@ def screen_to_motor(
       the opposite physical pitch rotation compared to tilting the front lens DOWN.
     """
     sx, sy = pan_right_dps, tilt_down_dps
-    if facing == "back":
-        sy = -sy
+    # Empirically verified on Pixel 11 Pro + OM3:
+    # - Horizontal mirror (cur_mirror=False on back vs True on front) is already compensated in steps 1-3.
+    # - Vertical tilt (+tilt_down_dps) drives pitch toward +49° (downward onto desk) in BOTH front & back modes!
 
     # Exact inverse of forward image pipeline: v_cur = M_cur * R_cur * v_raw
     # => v_cal = M_cal * R_cal * R_cur^-1 * M_cur^-1 * v_cur
@@ -517,7 +518,9 @@ class MotionArbiter:
         self._out_pitch = 0.0
 
     def trigger_search_now(self) -> None:
-        """Manually trigger panoramic search sweep."""
+        """Manually trigger panoramic search sweep (exits desk/hold lock so motors actually move)."""
+        self.desk_mode = False
+        self.ai_hold_mode = False
         self._had_face = True
         self._returned_home = False
         self._home_requested = False

@@ -157,13 +157,23 @@ def test_ai_hold_mode_prevents_face_tracking_override() -> None:
     assert interp.cmd_pitch_dps == 0.0
 
 
-def test_rear_camera_inverts_pitch_axis_vs_front_camera() -> None:
-    """Tilting DOWN with the rear camera must drive the opposite physical pitch motor vs front camera."""
+def test_rear_camera_preserves_downward_pitch_polarity() -> None:
+    """Empirically verified on Pixel 11 Pro + OM3: +tilt_down drives pitch toward +49° (desk) on both cameras."""
     cfg = _cal_cfg()
     front_m = screen_to_motor(0.0, 30.0, cfg, cur_rotate_deg=0, cur_mirror=True, facing="front")
     back_m = screen_to_motor(0.0, 30.0, cfg, cur_rotate_deg=0, cur_mirror=False, facing="back")
-    assert back_m[0] == pytest.approx(-front_m[0], abs=1e-6)
+    assert back_m[0] == pytest.approx(front_m[0], abs=1e-6)
     assert back_m[1] == pytest.approx(front_m[1], abs=1e-6)
+
+
+def test_trigger_search_now_exits_desk_mode() -> None:
+    arb = MotionArbiter(desk_mode=True, ai_hold_mode=True)
+    arb.trigger_search_now()
+    assert not arb.desk_mode
+    assert not arb.ai_hold_mode
+    interp = arb.update_vision([], vision_ms=10.0)
+    assert interp.state == "SEARCHING"
+    assert abs(interp.cmd_yaw_dps) > 0.0
 
 
 def test_angle_wrap_and_shortest_diff() -> None:
