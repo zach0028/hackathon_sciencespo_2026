@@ -113,34 +113,34 @@ GESTURES: dict[str, tuple[str, list[GestureStep]]] = {
     "nod_yes": (
         "Hochement OUI (haut / bas)",
         [
-            # Two bold ~30° vertical nods inside OM3's verified <=95°/s speed envelope (zero net drift!)
-            GestureStep(0.0, +88.0, 0.0, 0.42),
-            GestureStep(0.0, -94.0, 0.0, 0.46),
-            GestureStep(0.0, +92.0, 0.0, 0.43),
-            GestureStep(0.0, -90.0, 0.0, 0.43),
-            GestureStep(0.0, +32.0, 0.0, 0.16),
+            # Two crisp, unmistakable vertical nods safely inside OM3's -20°..+30° mechanical limits (zero end-stop slam!)
+            GestureStep(0.0, -72.0, 0.0, 0.30),
+            GestureStep(0.0, +76.0, 0.0, 0.32),
+            GestureStep(0.0, -74.0, 0.0, 0.31),
+            GestureStep(0.0, +74.0, 0.0, 0.31),
+            GestureStep(0.0, -25.0, 0.0, 0.11),
             GestureStep(0.0, 0.0, 0.0, 0.12),
         ],
     ),
     "shake_no": (
         "Secousse NON (gauche / droite)",
         [
-            # Wide ~42° horizontal head shakes inside OM3's verified <=96°/s speed envelope (zero net drift!)
-            GestureStep(-92.0, 0.0, 0.0, 0.34),
-            GestureStep(+96.0, 0.0, 0.0, 0.50),
-            GestureStep(-96.0, 0.0, 0.0, 0.50),
-            GestureStep(+96.0, 0.0, 0.0, 0.50),
-            GestureStep(-88.0, 0.0, 0.0, 0.19),
+            # Bold ~36° horizontal head shakes (pan axis has ±160° safe travel, <=88°/s verified!)
+            GestureStep(-84.0, 0.0, 0.0, 0.30),
+            GestureStep(+88.0, 0.0, 0.0, 0.44),
+            GestureStep(-88.0, 0.0, 0.0, 0.44),
+            GestureStep(+88.0, 0.0, 0.0, 0.44),
+            GestureStep(-82.0, 0.0, 0.0, 0.16),
             GestureStep(0.0, 0.0, 0.0, 0.12),
         ],
     ),
     "curious_tilt": (
         "Inclinaison curieuse",
         [
-            # Bold diagonal curious look (~30° pan + ~20° lift, roll=0 so OM3 CmdId 0x0C never drops packet!)
-            GestureStep(+64.0, -48.0, 0.0, 0.55),
-            GestureStep(0.0, 0.0, 0.0, 0.65),
-            GestureStep(-64.0, +48.0, 0.0, 0.55),
+            # Expressive diagonal curious look well inside mechanical limits (roll=0, zero overload risk!)
+            GestureStep(+58.0, -34.0, 0.0, 0.46),
+            GestureStep(0.0, 0.0, 0.0, 0.60),
+            GestureStep(-58.0, +34.0, 0.0, 0.46),
             GestureStep(0.0, 0.0, 0.0, 0.12),
         ],
     ),

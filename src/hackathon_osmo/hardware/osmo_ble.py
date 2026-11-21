@@ -200,10 +200,19 @@ class OsmoBleClient:
         await self.send_raw(pkt)
 
     def is_landscape(self) -> bool | None:
-        """Heuristic from live IMU quaternion on OM3: Landscape has |yaw| > 135°, Portrait ~ 90°."""
+        """Heuristic from live IMU quaternion on OM3:
+        - Landscape has |yaw| > 135°
+        - True upright Portrait has 70° <= |yaw| <= 115° AND |pitch| < 25°
+        - Limp/standby tilt returns None so recenter NEVER fires a spurious 90° orientation flip!
+        """
         if self.last_attitude is None:
             return None
-        return abs(self.last_attitude.yaw_deg) > 135.0
+        ay = abs(self.last_attitude.yaw_deg)
+        if ay > 135.0:
+            return True
+        if 70.0 <= ay <= 115.0 and abs(self.last_attitude.pitch_deg) < 25.0:
+            return False
+        return None
 
     async def send_speed(
         self,
