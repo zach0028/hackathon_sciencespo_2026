@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import subprocess
 from contextlib import asynccontextmanager
@@ -12,7 +13,7 @@ from typing import Any, AsyncIterator
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -22,6 +23,19 @@ from hackathon_osmo.hardware.pixel_camera import find_adb, list_adb_devices
 from hackathon_osmo.paths import STATIC_DIR
 
 runtime = StudioRuntime()
+
+
+def _compute_ui_version() -> str:
+    h = hashlib.sha1()
+    for name in ("face.html", "face.css", "face.js"):
+        p = STATIC_DIR / name
+        if p.exists():
+            h.update(p.read_bytes())
+    return h.hexdigest()[:10]
+
+
+UI_VERSION = _compute_ui_version()
+runtime.ui_version = UI_VERSION
 
 
 @asynccontextmanager
@@ -34,6 +48,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="hackathon_osmo Studio", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def _no_cache_ui_middleware(request: Request, call_next: Any) -> Response:
+    response: Response = await call_next(request)
+    if request.url.path in ("/", "/face") or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+    return response
+
+
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -61,7 +85,7 @@ async def api_launch_pixel_face(port: int = 8765) -> JSONResponse:
     if not serial:
         return JSONResponse({"ok": False, "error": "Aucun Pixel connecté en ADB"}, status_code=400)
 
-    url = f"http://127.0.0.1:{int(port)}/face"
+    url = f"http://127.0.0.1:{int(port)}/face?v={UI_VERSION}"
 
     def _launch_sync() -> None:
         subprocess.run([adb, "-s", serial, "reverse", f"tcp:{int(port)}", f"tcp:{int(port)}"], check=True, capture_output=True)

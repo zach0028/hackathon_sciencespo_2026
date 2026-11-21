@@ -66,7 +66,7 @@ Strict speaking rules:
 - ALWAYS speak ONLY in natural, fluent, concise spoken ENGLISH (1 to 2 short sentences max). NEVER switch to French or any other language, even if Zach mentions a French course or shows a French document — always respond in English.
 - Never mention having a "backend", "tools", or "delegation": act seamlessly as one living robotic companion.
 - For simple greetings or casual small talk requiring no physical action, vision, or screen display, reply directly and naturally in English.
-- Whenever Zach asks for a physical action (nod/shake, move head, LEDs, look at his paper/desk, come back to him, search), asks what you see or to read/explain a paper/diagram/what he is pointing at, asks to show a checklist/concept on your screen, or asks to remember something: delegate immediately while saying a very short natural English acknowledgment (2–4 words max: "Let me look…", "Checking your page…", "On it…") while the arm moves.
+- Whenever Zach asks for a physical action (nod/shake, move head, LEDs, look at his paper/desk, come back to him, search), asks what you see or to read/explain a paper/diagram/what he is pointing at, asks to put an exercise/practice problem/checklist/formula on your OLED screen, asks you to check his written answer on the sheet, or asks to remember something: delegate immediately while saying a very short natural English acknowledgment (2–3 words max: "On it…", "Let me look…", "Pulling it up…") while the arm moves.
 - As soon as a result arrives from your brain, deliver it aloud naturally and concisely in English.
 """
 
@@ -79,14 +79,19 @@ Strict rules:
 2. SENSOR GROUND TRUTH:
    - NEVER say "I see you" if [Capteurs] or look_at_user reports face_detected=False. Be honest or call look_at_user(search_if_missing=true).
    - Never guess illegible words: desk photos are already rotated upright, and if Zach points his finger at a diagram/word, a [MACRO ZOOM AROUND FINGER] image is automatically attached! NEVER ask Zach to move/rotate his paper before trying look_at_desk(zoom=1.0, ultra_hd=true, retarget_sheet=true, scan_pages=true) or optical zoom 2.0/3.0!
-3. TOOL PRIORITY (avoid redundant calls to keep latency low):
-   - PRIORITY 1 — Direct answer WITHOUT tools: if you are ALREADY in the right mode (e.g. mode_bureau=True with an upright HD image already attached, or [MACRO ZOOM AROUND FINGER] already visible) and everything is legible -> answer DIRECTLY in English!
-   - PRIORITY 2 — look_at_desk(zoom, ultra_hd, retarget_sheet, scan_pages):
+3. FAST SHOW & TELL CHOREOGRAPHY (DESK <-> FACE):
+   - Your Pixel OLED screen faces the OPPOSITE side of the rear reading camera. Whenever you want Zach to READ an exercise, checklist, or formula on your screen while you are currently in desk mode (mode_bureau=True), ALWAYS call show_on_screen(..., face_user=true, spoken_summary="...")!
+   - show_on_screen with face_user=true AUTOMATICALLY swings your Pixel OLED back to Zach's face in ~1.3s AND delivers your spoken_summary immediately in 1 single hop (0 extra latency!). NEVER call look_at_user separately after show_on_screen(face_user=true)!
+   - For exercises/practice problems: use mode="exercise", include a "Given: ..." item first when helpful, then 2–3 crisp "Q1: ...", "Q2: ..." questions, and put the formula/hint in `note` (hidden behind a tappable HINT button on the Pixel screen!).
+   - When Zach finishes solving or says "check my sheet" / "look at my work" / "look back at the paper", call look_at_desk(...) right away (it smoothly returns to the desk and clears the old card so you can grade his answer and swing back!).
+4. TOOL PRIORITY (avoid redundant calls to keep latency low):
+   - PRIORITY 1 — Direct answer WITHOUT tools: if you are ALREADY in the right mode (e.g. mode_bureau=True with an upright HD image already attached, or [MACRO ZOOM AROUND FINGER] already visible) and Zach just asks a question about it -> answer DIRECTLY in English!
+   - PRIORITY 2 — show_on_screen(mode, title, items, note, face_user, spoken_summary): whenever Zach asks for an exercise, practice question, checklist, to-do list, formula, or summary ON YOUR SCREEN! Always provide a natural 1-sentence `spoken_summary` so Osmo responds in 1 single ultra-fast hop.
+   - PRIORITY 3 — look_at_desk(zoom, ultra_hd, retarget_sheet, scan_pages):
      * To read an open 2-page notebook or dense/small notes: call scan_pages=true, ultra_hd=true (captures both LEFT and RIGHT pages in upright 4K in 1 fast call!).
-     * For tiny details (cards/small equations): zoom=2.0 or 3.0, ultra_hd=true, scan_pages=false.
+     * For checking a quick written answer or tiny details: zoom=1.0 or 2.0, ultra_hd=false (2.7K is crisp & 2x faster!), scan_pages=false.
      * Paper is ALWAYS downward on the desk, never on the ceiling.
-   - PRIORITY 3 — show_on_screen(mode, title, items, note): whenever Zach asks for a to-do list, revision steps, checklist, summary, or formula ON YOUR SCREEN (or whenever presenting 3–5 concrete action steps helps him study!), push a crisp interactive card to the Pixel OLED screen — callable IN PARALLEL with your spoken English reply or other tools!
-   - PRIORITY 4 — look_at_user(search_if_missing): return to Zach (front camera + head pose + Apple Vision lock + automatic follow_face). NEVER follow look_at_user with set_tracking(follow_face)!
+   - PRIORITY 4 — look_at_user(search_if_missing): return to Zach when NOT showing a screen card (front camera + head pose + Apple Vision lock + automatic follow_face). NEVER follow look_at_user with set_tracking(follow_face)!
    - PRIORITY 5 — move_arm(pan_deg, tilt_deg, scan_room): fine manual arm tilt/pan (pan < 0 LEFT, pan > 0 RIGHT, tilt < 0 UP, tilt > 0 DOWN) or 3-view room scan.
    - PRIORITY 6 — express(gesture, led) & set_tracking(mode): expressive gesture + LED in dialogue mode.
    - PRIORITY 7 — remember(action, category, content, query): persistent local SQLite memory (callable IN PARALLEL with visual tools!). Save facts/preferences/study notes when asked or valuable; search past notes; forget on request.
@@ -243,31 +248,39 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "show_on_screen",
-        "description": "Display a structured interactive card directly on Osmo's Pixel 11 Pro OLED screen (e.g., an interactive to-do checklist Zach can tap to check off, or a key concept/formula card) without slowing down speech. Use mode='clear' to return to the normal 3D face.",
+        "description": "Display a structured full-bleed CAD board directly on Osmo's Pixel 11 Pro OLED screen: an Exercise board (Given data + Q1/Q2 questions + tappable hidden Hint), an interactive tappable Checklist, or a Concept/Formula board. If currently facing the desk and face_user=true, automatically swings the Pixel OLED back to Zach's face (~1.3s) in the same call! Pass spoken_summary to speak immediately without waiting for a second LLM round (~3.5s faster!).",
         "strict": True,
         "parameters": {
             "type": "object",
             "properties": {
                 "mode": {
                     "type": "string",
-                    "enum": ["checklist", "concept", "clear"],
-                    "description": "checklist (interactive tappable to-do list), concept (formula/key points card), or clear (return to normal face).",
+                    "enum": ["exercise", "checklist", "concept", "clear"],
+                    "description": "exercise (structured problem with Given + Q1/Q2 + tappable Hint), checklist (interactive tappable to-do list), concept (formula/key points), or clear (return to normal 3D face).",
                 },
                 "title": {
                     "type": "string",
-                    "description": "Short uppercase header (e.g. 'THERMO · NEXT STEPS' or 'QMAX INDEX'). Empty string if mode='clear'.",
+                    "description": "Short uppercase board title (e.g. 'BAC PRACTICE · HEAT TRANSFER' or 'QMAX FORMULA'). Empty string if mode='clear'.",
                 },
                 "items": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Up to 5 concise English steps or key bullet points to display on the Pixel OLED screen.",
+                    "description": "Up to 5 concise English lines. For exercise mode, optionally start with 'Given: ...' followed by 'Q1: ...', 'Q2: ...'.",
                 },
                 "note": {
                     "type": "string",
-                    "description": "Optional short formula or takeaway line at the bottom of the card (empty string if none).",
+                    "description": "For exercise mode: hint/formula hidden behind a tappable SHOW HINT button. For checklist/concept: bottom takeaway or formula line (empty string if none).",
+                },
+                "face_user": {
+                    "type": "boolean",
+                    "description": "true (recommended) to automatically swing the Pixel OLED screen back toward Zach if Osmo is currently facing the desk, so Zach can read it immediately.",
+                },
+                "spoken_summary": {
+                    "type": "string",
+                    "description": "1–2 short spoken English sentences Osmo will say aloud immediately after displaying the board (eliminates round-2 latency!). Leave empty string only if another visual tool needs a follow-up.",
                 },
             },
-            "required": ["mode", "title", "items", "note"],
+            "required": ["mode", "title", "items", "note", "face_user", "spoken_summary"],
             "additionalProperties": False,
         },
     },
@@ -1072,6 +1085,12 @@ class OpenAILiveBrain:
                     tool_dt = round((time.monotonic() - t_tool) * 1000.0, 1)
                     tools_total_ms += tool_dt
 
+                    spoken_override = (
+                        result_obj.pop("_spoken_override", None) if isinstance(result_obj, dict) else None
+                    )
+                    if spoken_override and not reply_text:
+                        reply_text = str(spoken_override).strip()
+
                     images = result_obj.pop("_images", None) if isinstance(result_obj, dict) else None
                     if images:
                         need_followup_for_info = True
@@ -1201,6 +1220,8 @@ class OpenAILiveBrain:
                     mode="desk" if is_desk else "face",
                     tools=tools_called,
                 )
+            if reply_text:
+                self._recent_turns.append({"role": "assistant", "content": reply_text})
 
             self._append_ui_transcript(
                 user=user_text,

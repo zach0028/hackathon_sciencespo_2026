@@ -109,8 +109,14 @@ def test_pixel_oled_face_assets_exist_and_serve_cleanly() -> None:
         assert p.stat().st_size > 100
     html = (STATIC_DIR / "face.html").read_text(encoding="utf-8")
     assert 'id="face-canvas"' in html
-    assert 'id="desk-layer"' in html
+    assert 'id="desk-strip"' in html
+    assert 'id="board-layer"' in html
+    assert 'id="board-given"' in html
+    assert 'id="btn-toggle-hint"' in html
+    assert 'id="btn-board-pivot"' in html
     assert 'id="focus-layer"' in html
+    # Raw conversation transcript overlay over 3D head was intentionally removed!
+    assert 'id="caption-wrap"' not in html
 
 
 def test_roi_paper_metrics_separates_cream_paper_from_dark_laptop() -> None:

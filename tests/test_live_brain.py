@@ -32,6 +32,20 @@ def test_robot_tools_compact_five_tool_hierarchy() -> None:
         assert t["strict"] is True
         assert t["parameters"]["additionalProperties"] is False
 
+    screen_tool = next(t for t in ROBOT_TOOLS if t["name"] == "show_on_screen")
+    props = screen_tool["parameters"]["properties"]
+    assert props["mode"]["enum"] == ["exercise", "checklist", "concept", "clear"]
+    assert "face_user" in props
+    assert "spoken_summary" in props
+    assert set(screen_tool["parameters"]["required"]) == {
+        "mode",
+        "title",
+        "items",
+        "note",
+        "face_user",
+        "spoken_summary",
+    }
+
 
 def test_extract_live_session_info_supports_nested_and_flat_shapes() -> None:
     nested = {"session": {"id": "sess_123"}, "transport": {"type": "webrtc", "sdp": "v=0\r\nm=audio"}}

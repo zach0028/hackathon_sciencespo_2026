@@ -11,19 +11,36 @@
   const elClockMini = document.getElementById("clock-mini");
   const elFocusLayer = document.getElementById("focus-layer");
   const elFocusClock = document.getElementById("focus-clock");
-  const elCaptionWrap = document.getElementById("caption-wrap");
-  const elCaptionText = document.getElementById("caption-text");
-  const elDeskLayer = document.getElementById("desk-layer");
+
+  // Clean Desk Reading Strip
+  const elDeskStrip = document.getElementById("desk-strip");
   const elDeskLed = document.getElementById("desk-led-dot");
   const elDeskStatus = document.getElementById("desk-status-label");
   const elDeskOptics = document.getElementById("desk-optics");
-  const elDeskReply = document.getElementById("desk-reply");
-  const elScreenList = document.getElementById("screen-list");
-  const elScreenNote = document.getElementById("screen-note");
-  const btnClearCard = document.getElementById("btn-clear-card");
-  const elDeskHintRight = document.getElementById("desk-hint-right");
-  const elDeskScanBar = document.getElementById("desk-scan-bar");
   const elDeskHiLight = document.getElementById("desk-hilight-label");
+  const elDeskScanBar = document.getElementById("desk-scan-bar");
+  const btnDeskToFace = document.getElementById("btn-desk-to-face");
+
+  // Full-Bleed Interactive OLED Study Board (Exercise / Checklist / Concept)
+  const elBoardLayer = document.getElementById("board-layer");
+  const elBoardCard = document.getElementById("board-card");
+  const elBoardModeBadge = document.getElementById("board-mode-badge");
+  const elBoardTitle = document.getElementById("board-title");
+  const elBoardProgressPill = document.getElementById("board-progress-pill");
+  const elBoardProgressTrack = document.getElementById("board-progress-track");
+  const elBoardProgressFill = document.getElementById("board-progress-fill");
+  const elBoardGiven = document.getElementById("board-given");
+  const elBoardGivenText = document.getElementById("board-given-text");
+  const elBoardList = document.getElementById("board-list");
+  const elBoardHintWrap = document.getElementById("board-hint-wrap");
+  const btnToggleHint = document.getElementById("btn-toggle-hint");
+  const elBoardHintBox = document.getElementById("board-hint-box");
+  const elBoardNote = document.getElementById("board-note");
+  const elBoardFootGuide = document.getElementById("board-foot-guide");
+  const btnBoardPivot = document.getElementById("btn-board-pivot");
+  const btnClearCard = document.getElementById("btn-clear-card");
+  const btnCloseBoard = document.getElementById("btn-close-board");
+
   const elToast = document.getElementById("toast");
   const elDemoDock = document.getElementById("demo-dock");
   const btnDemoToggle = document.getElementById("btn-demo-toggle");
@@ -81,6 +98,10 @@
 
   // --- Live state mirrored from StudioRuntime /ws ---
   let ws = null;
+  let knownUiVersion = null;
+  let lastBoardSig = "";
+  let lastCardUpdatedAt = 0;
+  let hintRevealed = false;
   let demoMode = new URLSearchParams(location.search).get("demo");
   let manualDnd = false;
   let lastActivityAt = performance.now();
@@ -184,6 +205,15 @@
 
   // --- Apply StudioRuntime snapshot ---
   function applySnapshot(s) {
+    // Auto-reload Pixel OLED immediately whenever backend UI assets are updated!
+    if (s && s.ui_version) {
+      if (knownUiVersion === null) {
+        knownUiVersion = s.ui_version;
+      } else if (s.ui_version !== knownUiVersion) {
+        location.reload();
+        return;
+      }
+    }
     if (demoMode) return;
     const cam = s.camera || {};
     const vis = s.vision || {};
@@ -304,12 +334,22 @@
     live.drowsyLevel = drowsy ? Math.min(1, (idleForMs - 14000) / 11000) : 0;
 
     const hasScreenCard = live.screenCard && live.screenCard.mode && live.screenCard.mode !== "none";
-    if (isDesk || hasScreenCard) {
+    if (hasScreenCard) {
+      live.mode = "board";
+      const cmode = live.screenCard.mode;
+      if (cmode === "checklist") {
+        live.mood = "desk_locked";
+        live.stateLabel = "CHECKLIST";
+      } else if (cmode === "concept") {
+        live.mood = "curious";
+        live.stateLabel = "CONCEPT";
+      } else {
+        live.mood = "listen";
+        live.stateLabel = "EXERCISE";
+      }
+    } else if (isDesk) {
       live.mode = "desk";
-      if (hasScreenCard) {
-        live.mood = live.screenCard.mode === "checklist" ? "desk_locked" : "listen";
-        live.stateLabel = live.screenCard.mode === "checklist" ? "CHECKLIST" : "CONCEPT CARD";
-      } else if (live.opticalPhase === "focusing") {
+      if (live.opticalPhase === "focusing") {
         live.mood = "focusing";
         live.stateLabel = "AF // FOCUSING";
       } else if (live.microPhase === "reading_sheet" || busy) {
@@ -381,6 +421,116 @@
     syncDomLayers();
   }
 
+  function escHtml(str) {
+    return String(str || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  function renderBoard(card) {
+    const mode = card.mode || "exercise";
+    const items = Array.isArray(card.items) ? card.items : [];
+    const updatedAt = Number(card.updated_at || 0);
+    if (updatedAt && updatedAt !== lastCardUpdatedAt) {
+      lastCardUpdatedAt = updatedAt;
+      hintRevealed = false;
+      haptic([12, 24, 14]);
+      sp.pitch.vel += 1.5; // crisp arrival micro-nod!
+    }
+
+    const sig = JSON.stringify({
+      m: mode,
+      t: card.title || "",
+      n: card.note || "",
+      h: hintRevealed,
+      d: live.deskMode,
+      i: items.map((x) => [x.text, Boolean(x.done)])
+    });
+    if (sig === lastBoardSig) return;
+    lastBoardSig = sig;
+
+    elBoardCard.dataset.cardMode = mode;
+    elBoardModeBadge.textContent = mode.toUpperCase();
+    elBoardTitle.textContent = card.title || (mode === "exercise" ? "PRACTICE EXERCISE" : mode === "checklist" ? "STUDY CHECKLIST" : "KEY CONCEPT");
+
+    // Checklist completion progress bar
+    if (mode === "checklist" && items.length > 0) {
+      const doneCount = items.filter((it) => Boolean(it.done)).length;
+      elBoardProgressPill.textContent = `${doneCount} / ${items.length}`;
+      elBoardProgressPill.classList.remove("hidden");
+      elBoardProgressTrack.classList.remove("hidden");
+      elBoardProgressFill.style.width = `${Math.round((doneCount / items.length) * 100)}%`;
+    } else {
+      elBoardProgressPill.classList.add("hidden");
+      elBoardProgressTrack.classList.add("hidden");
+    }
+
+    // Separate "Given / Data" strip in Exercise mode for effortless scanning
+    const givenParts = [];
+    const displayRows = [];
+    items.forEach((it, origIdx) => {
+      const txt = String(it.text || "").trim();
+      if (!txt) return;
+      if (mode === "exercise") {
+        const mGiven = txt.match(/^(?:given|data|context|values)\s*[:—-]\s*(.+)$/i);
+        if (mGiven) {
+          givenParts.push(mGiven[1].trim());
+          return;
+        }
+      }
+      displayRows.push({ text: txt, done: Boolean(it.done), origIdx });
+    });
+
+    if (mode === "exercise" && givenParts.length > 0) {
+      elBoardGivenText.textContent = givenParts.join("  ·  ");
+      elBoardGiven.classList.remove("hidden");
+    } else {
+      elBoardGiven.classList.add("hidden");
+    }
+
+    // Render Exercise questions / Checklist items / Concept bullets
+    elBoardList.innerHTML = displayRows.map((row, rowIdx) => {
+      let tag = `0${rowIdx + 1}`;
+      let bodyText = row.text;
+      if (mode === "checklist") {
+        tag = row.done ? "[✓]" : "[ ]";
+      } else if (mode === "exercise") {
+        const mQ = bodyText.match(/^(Q\d+|Part\s*[A-Z]|\d+)[\)\.\:\-]\s*(.+)$/i);
+        if (mQ) {
+          tag = mQ[1].toUpperCase().replace(/^(\d+)$/, "Q$1");
+          bodyText = mQ[2].trim();
+        } else {
+          tag = `Q${rowIdx + 1}`;
+        }
+      }
+      return `<li class="board-item ${row.done ? "done" : ""}" data-idx="${row.origIdx}"><span class="item-tag">${escHtml(tag)}</span><span class="item-text">${escHtml(bodyText)}</span></li>`;
+    }).join("");
+
+    // Exercise collapsible Hint vs Concept/Checklist bottom Note
+    const noteTxt = String(card.note || "").trim();
+    if (mode === "exercise" && noteTxt) {
+      elBoardHintWrap.classList.remove("hidden");
+      elBoardNote.classList.add("hidden");
+      btnToggleHint.textContent = hintRevealed ? "HINT ▾ HIDE" : "HINT ▸ TAP TO REVEAL";
+      elBoardHintBox.textContent = noteTxt;
+      elBoardHintBox.classList.toggle("hidden", !hintRevealed);
+    } else if (noteTxt) {
+      elBoardHintWrap.classList.add("hidden");
+      elBoardNote.classList.remove("hidden");
+      elBoardNote.textContent = noteTxt;
+    } else {
+      elBoardHintWrap.classList.add("hidden");
+      elBoardNote.classList.add("hidden");
+    }
+
+    elBoardFootGuide.textContent =
+      mode === "exercise"
+        ? (noteTxt ? "SOLVE ON PAPER · TAP HINT IF STUCK" : "SOLVE ON PAPER · SAY CHECK MY SHEET")
+        : mode === "checklist"
+          ? "TAP ITEMS TO CHECK OFF"
+          : "OSMO // OLED CONCEPT BOARD";
+
+    btnBoardPivot.textContent = live.deskMode ? "FACE ME ↗" : "LOOK AT SHEET ↘";
+  }
+
   function syncDomLayers() {
     document.body.dataset.mode = live.mode;
     elStatePill.textContent = live.stateLabel;
@@ -395,55 +545,30 @@
 
     elFocusLayer.classList.toggle("hidden", live.mode !== "focus");
 
-    const showDesk = live.mode === "desk";
-    elDeskLayer.classList.toggle("hidden", !showDesk);
-    if (showDesk) {
-      const card = live.screenCard || { mode: "none", title: "", items: [], note: "" };
-      const hasCard = card.mode && card.mode !== "none";
-      if (hasCard) {
-        elDeskLed.classList.toggle("locked", card.mode === "checklist");
-        elDeskStatus.textContent = card.title || (card.mode === "checklist" ? "OSMO // TO-DO LIST" : "OSMO // CONCEPT");
-        elDeskOptics.textContent = live.deskMode
-          ? `${live.zoom.toFixed(live.zoom % 1 ? 2 : 1)}× · ${live.width}×${live.height}`
-          : card.mode.toUpperCase();
-        elDeskReply.classList.add("hidden");
-        elScreenList.classList.remove("hidden");
-        const items = Array.isArray(card.items) ? card.items : [];
-        elScreenList.innerHTML = items.map((it, idx) => {
-          const done = Boolean(it.done);
-          const mark = card.mode === "checklist" ? (done ? "[✓]" : "[ ]") : `0${idx + 1}`;
-          const esc = String(it.text || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-          return `<li class="screen-item ${done ? "done" : ""}" data-idx="${idx}"><span class="screen-box">${mark}</span><span>${esc}</span></li>`;
-        }).join("");
-        elScreenNote.classList.toggle("hidden", !card.note);
-        if (card.note) elScreenNote.textContent = card.note;
-        btnClearCard.classList.remove("hidden");
-        elDeskHintRight.classList.add("hidden");
-      } else {
-        elDeskLed.classList.toggle("locked", live.sheetFound && !live.busy);
-        elDeskStatus.textContent = live.busy
-          ? "DESK // ANALYZING SHEET"
-          : live.sheetFound
-            ? "DESK // SHEET LOCKED"
-            : "DESK // CAMERA ACTIVE";
-        elDeskOptics.textContent = `${live.zoom.toFixed(live.zoom % 1 ? 2 : 1)}× · ${live.width}×${live.height}`;
-        elDeskReply.classList.remove("hidden");
-        elDeskReply.textContent = live.reply || "Place your paper in front of the camera and ask away.";
-        elScreenList.classList.add("hidden");
-        elScreenNote.classList.add("hidden");
-        btnClearCard.classList.add("hidden");
-        elDeskHintRight.classList.remove("hidden");
-      }
-      elDeskScanBar.classList.toggle("hidden", !live.busy);
+    // Clean Desk Reading Strip (ONLY when reading desk with no board card)
+    const showDeskStrip = live.mode === "desk";
+    elDeskStrip.classList.toggle("hidden", !showDeskStrip);
+    if (showDeskStrip) {
+      elDeskLed.classList.toggle("locked", live.sheetFound && !live.busy);
+      elDeskStatus.textContent = live.busy
+        ? "DESK // ANALYZING SHEET"
+        : live.sheetFound
+          ? "DESK // SHEET LOCKED"
+          : "DESK // CAMERA ACTIVE";
+      const resTag = live.width >= 3800 ? "4K" : live.width >= 2500 ? "2.7K" : `${live.width}p`;
+      elDeskOptics.textContent = `${live.zoom.toFixed(live.zoom % 1 ? 2 : 1)}× · ${resTag}`;
       elDeskHiLight.textContent = `HILIGHT // ${live.hilightEffect.toUpperCase()}`;
+      elDeskScanBar.classList.toggle("hidden", !live.busy);
     }
 
-    const showCaption =
-      live.mode === "dialogue" &&
-      Boolean(live.reply) &&
-      (live.speaking || performance.now() - lastReplyAt < 6500);
-    elCaptionWrap.classList.toggle("hidden", !showCaption);
-    if (showCaption) elCaptionText.textContent = live.reply;
+    // Full-Bleed OLED Study Board (Exercise / Checklist / Concept)
+    const showBoard = live.mode === "board";
+    elBoardLayer.classList.toggle("hidden", !showBoard);
+    if (showBoard) {
+      renderBoard(live.screenCard || { mode: "exercise", title: "", items: [], note: "" });
+    } else {
+      lastBoardSig = "";
+    }
   }
 
   // --- WebSocket connection ---
@@ -479,21 +604,31 @@
     pointer.active = false;
   });
 
+  function isUiControl(target) {
+    return Boolean(
+      target.closest("#demo-dock") ||
+      target.closest("#btn-demo-toggle") ||
+      target.closest("#board-card") ||
+      target.closest("#desk-strip")
+    );
+  }
+
   document.addEventListener("pointerdown", (e) => {
-    if (e.target.closest("#demo-dock") || e.target.closest("#btn-demo-toggle") || e.target.closest(".screen-item") || e.target.closest("#btn-clear-card")) return;
+    if (isUiControl(e.target)) return;
     requestWakeLock();
     touchStartY = e.clientY;
     touchStartT = performance.now();
   });
 
   // Interactive tap-to-check on Pixel OLED checklist items!
-  elScreenList.addEventListener("click", (e) => {
-    const li = e.target.closest(".screen-item");
-    if (!li) return;
+  elBoardList.addEventListener("click", (e) => {
+    const li = e.target.closest(".board-item");
+    if (!li || !live.screenCard || live.screenCard.mode !== "checklist") return;
     const idx = Number(li.dataset.idx);
     if (Number.isNaN(idx)) return;
     haptic(14);
-    if (demoMode && live.screenCard && live.screenCard.items[idx]) {
+    sp.pitch.vel += 1.5; // happy micro-nod on check-off!
+    if (demoMode && live.screenCard.items[idx]) {
       live.screenCard.items[idx].done = !live.screenCard.items[idx].done;
       syncDomLayers();
     } else {
@@ -501,16 +636,45 @@
     }
   });
 
-  btnClearCard.addEventListener("click", () => {
+  // Exercise collapsible Hint button
+  btnToggleHint.addEventListener("click", () => {
+    hintRevealed = !hintRevealed;
+    haptic(12);
+    sp.pitch.vel += 1.2;
+    syncDomLayers();
+  });
+
+  function dismissBoard() {
     haptic(12);
     live.screenCard = { mode: "none", title: "", items: [], note: "" };
     if (!demoMode) sendWs({ action: "clear_screen_card" });
     live.mode = live.deskMode ? "desk" : "dialogue";
     syncDomLayers();
+  }
+
+  btnClearCard.addEventListener("click", dismissBoard);
+  btnCloseBoard.addEventListener("click", dismissBoard);
+
+  // Instant Show & Tell hardware pivot buttons on Pixel OLED!
+  btnBoardPivot.addEventListener("click", () => {
+    haptic([14, 30, 18]);
+    if (live.deskMode) {
+      if (!demoMode) sendWs({ action: "return_face_mode" });
+      showToast("TURNING TO FACE");
+    } else {
+      if (!demoMode) sendWs({ action: "enter_desk_mode" });
+      showToast("LOOKING AT SHEET");
+    }
+  });
+
+  btnDeskToFace.addEventListener("click", () => {
+    haptic([14, 30, 18]);
+    if (!demoMode) sendWs({ action: "return_face_mode" });
+    showToast("TURNING TO FACE");
   });
 
   document.addEventListener("pointerup", (e) => {
-    if (e.target.closest("#demo-dock") || e.target.closest("#btn-demo-toggle") || e.target.closest(".screen-item") || e.target.closest("#btn-clear-card")) return;
+    if (isUiControl(e.target)) return;
     const dy = e.clientY - touchStartY;
     const dt = performance.now() - touchStartT;
 
@@ -613,26 +777,57 @@
       live.stateLabel = "QUIET";
       live.reply = "";
       live.screenCard = { mode: "none", title: "", items: [], note: "" };
+    } else if (preset === "exercise") {
+      live.mode = "board";
+      live.mood = "listen";
+      live.stateLabel = "EXERCISE";
+      hintRevealed = false;
+      live.screenCard = {
+        mode: "exercise",
+        title: "BAC PRACTICE · HEAT TRANSFER",
+        items: [
+          { text: "Given: ICENYL Qmax = 0.18 W/cm² · Contact area A = 10 cm²", done: false },
+          { text: "Q1: Which direction does conductive heat flow when your hand touches the fabric?", done: false },
+          { text: "Q2: Calculate the peak instantaneous heat power Pmax in watts.", done: false }
+        ],
+        note: "Use Pmax = Qmax × A (check that cm² cancels cleanly!)",
+        updated_at: Date.now()
+      };
     } else if (preset === "checklist") {
-      live.mode = "desk";
+      live.mode = "board";
       live.mood = "desk_locked";
       live.stateLabel = "CHECKLIST";
       live.screenCard = {
         mode: "checklist",
-        title: "THERMO REVISION // QMAX",
+        title: "THERMO REVISION · QMAX",
         items: [
           { text: "Draw heat flux arrow: skin → fabric → air", done: true },
           { text: "Compare Qmax: Cotton vs ICENYL (0.18 W/cm²)", done: false },
           { text: "Explain instant touch vs sustained cooling", done: false }
         ],
-        note: "Qmax = peak conductive heat flux at first contact"
+        note: "Qmax = peak conductive heat flux at first contact",
+        updated_at: Date.now()
+      };
+    } else if (preset === "concept") {
+      live.mode = "board";
+      live.mood = "curious";
+      live.stateLabel = "CONCEPT";
+      live.screenCard = {
+        mode: "concept",
+        title: "COOL-TOUCH FABRIC PHYSICS",
+        items: [
+          { text: "Higher Qmax means faster initial heat draw from skin → cooler feel", done: false },
+          { text: "Conduction dominates the first second; evaporation & airflow sustain cooling", done: false },
+          { text: "ICENYL reaches 0.18 W/cm² vs ~0.10 W/cm² for standard cotton", done: false }
+        ],
+        note: "P = Qmax × Area   (W = W/cm² × cm²)",
+        updated_at: Date.now()
       };
     } else if (preset === "desk") {
       live.mode = "desk";
       live.mood = "desk_locked";
       live.stateLabel = "SHEET LOCKED";
       live.screenCard = { mode: "none", title: "", items: [], note: "" };
-      live.reply = "The red arrows show conductive heat moving from your skin through the fabric to the air.";
     } else {
       live.mode = "dialogue";
       live.screenCard = { mode: "none", title: "", items: [], note: "" };
@@ -995,21 +1190,28 @@
       tRoll = 0.0;
       tScale = 0.78;
       tCy = 0.44;
+    } else if (live.mode === "board") {
+      // Dock cleanly into the left 21% rail facing right toward the OLED Study Board!
+      const narrow = W < 640;
+      tYaw = 0.34 + Math.sin(t * 0.75) * 0.04;
+      tPitch = -0.04 + Math.cos(t * 0.6) * 0.025 + (live.speaking ? Math.sin(t * 4.8) * 0.03 : 0);
+      tRoll = 0.02;
+      tScale = narrow ? 0.001 : 0.43;
+      tCx = narrow ? 0.10 : 0.108;
+      tCy = 0.51;
     } else if (live.mode === "desk") {
-      // Shrink cleanly to left side & mirror physical downward desk pitch + reading saccades!
-      const narrow = W < 680;
+      // Full-screen sculptural 3D CAD head pitched down reading the sheet (zero text wall blocking it!)
       const deskPitchRad = !demoMode && live.armConnected
-        ? Math.max(0.20, Math.min(0.58, live.armRelPitchDeg * (Math.PI / 180) * 0.85))
-        : 0.36;
-      // Left-to-right horizontal reading saccades while Vision Brain reads the sheet!
-      const readSweep = live.mood === "reading" ? (((t * 1.15) % 1) * 0.26 - 0.13) : Math.sin(t * 0.8) * 0.04;
+        ? Math.max(0.22, Math.min(0.55, live.armRelPitchDeg * (Math.PI / 180) * 0.85))
+        : 0.34;
+      const readSweep = live.mood === "reading" ? (((t * 1.15) % 1) * 0.30 - 0.15) : Math.sin(t * 0.8) * 0.05;
       const readLine = live.mood === "reading" ? (Math.floor(t * 1.15) % 3) * 0.045 : 0;
-      tYaw = 0.28 + readSweep;
+      tYaw = readSweep;
       tPitch = deskPitchRad + readLine;
-      tRoll = -0.05;
-      tScale = narrow ? 0.001 : 0.46;
-      tCx = narrow ? 0.15 : 0.16;
-      tCy = 0.52;
+      tRoll = -0.04;
+      tScale = 0.88;
+      tCx = 0.50;
+      tCy = 0.44;
     } else if (demoMode || !live.armConnected) {
       if (live.mood === "attentive") {
         // Lean slightly in + attentive head tilt while user is speaking!
@@ -1284,7 +1486,7 @@
     });
 
     // 8. Speaking state: subtle technical oscilloscope ticks along lower cube face
-    if (wave > 0.05 && live.mode === "dialogue") {
+    if (wave > 0.05 && (live.mode === "dialogue" || live.mode === "board")) {
       ctx.save();
       const bars = 13;
       const halfSpan = 0.34;

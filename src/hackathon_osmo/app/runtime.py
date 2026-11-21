@@ -77,6 +77,7 @@ class StudioRuntime:
 
         self.recorder = SessionRecorder()
         self.memory = OsmoMemoryStore()
+        self.ui_version: str = "dev"
         self.detector = AppleVisionFaceDetector()
         self.sheet_detector = AppleVisionSheetDetector()
         self._latest_sheet: SheetDetection = SheetDetection()
@@ -319,12 +320,19 @@ class StudioRuntime:
             sh = self._latest_sheet
             ocr_hint = " | ".join(sh.lines[:5]) if sh.lines else "aucun"
             sheet_txt = f", sheet_found={sh.found}, ocr_preview=[{ocr_hint}]"
+        screen_txt = ""
+        if self.screen_card.get("mode") not in (None, "none"):
+            sc_items = " ; ".join(
+                f"{'[x] ' if it.get('done') else ''}{it.get('text', '')}"
+                for it in (self.screen_card.get("items") or [])[:5]
+            )
+            screen_txt = f", screen_board={self.screen_card.get('mode')}:{self.screen_card.get('title')} [{sc_items}]"
         return (
             f"camera={self.facing} ({self.width}x{self.height} zoom={self.camera_zoom:.2f}x), "
             f"mode_bureau={self.arbiter.desk_mode}, ai_hold={self.arbiter.ai_hold_mode}, "
             f"face_detected={interp.face_detected} (conf={interp.confidence:.2f}, pos={interp.cx:+.2f},{interp.cy:+.2f}), "
             f"tracking_state={interp.state}, moteurs_live={self.arbiter.live_motors}, "
-            f"hilight={self.hilight.current_effect}, {att_txt}{sheet_txt}"
+            f"hilight={self.hilight.current_effect}, {att_txt}{sheet_txt}{screen_txt}"
         )
 
     def _save_calibration_key(self, key: str, value: dict[str, Any]) -> None:
@@ -428,7 +436,7 @@ class StudioRuntime:
                 break
 
             cmd_dir = sign_for_pos_err if err > 0 else -sign_for_pos_err
-            spd = max(20.0, min(78.0, abs_err * 2.7))
+            spd = max(24.0, min(95.0, abs_err * 3.1))
             await self._send_body_speed(0.0, cmd_dir * spd)
             # Dead-reckon pitch between 1 Hz IMU packets (negative body tilt increases pitch)
             est_pitch += (-cmd_dir * spd * 0.72) * dt
@@ -440,21 +448,17 @@ class StudioRuntime:
     async def _pivot_pan_relative_quat(
         self,
         target_deg: float = 135.0,
-        timeout_s: float = 4.5,
+        timeout_s: float = 4.0,
         *,
         allow_reverse: bool = False,
         overlap_pitch_target: float | None = None,
     ) -> float:
-        """Rotate horizontal Pan LEFT (default desk direction) using OM3's 1 Hz quaternion IMU + dead-reckoning.
-
-        When overlap_pitch_target is provided, smoothly begins pitching DOWN during the final 38°
-        of horizontal pan so the camera arrives at the desk ~0.8s faster!
-        """
+        """Fast geodesic left horizontal Pan pivot with overlapped downward Pitch (~1.4s total!)."""
         if not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
             return 0.0
         q_start = self._osmo.last_attitude.quat
         if q_start is None:
-            await self.arbiter.move_relative_deg(target_deg, 0.0, speed_dps=85.0, hold_after=True)
+            await self.arbiter.move_relative_deg(target_deg, 0.0, speed_dps=95.0, hold_after=True)
             return target_deg
 
         stop_deg = max(30.0, min(174.0, float(target_deg) - 4.0))
@@ -479,7 +483,6 @@ class StudioRuntime:
                 continue
 
             if att.updated_at != last_imu_ts:
-                # Fresh 1 Hz IMU packet!
                 last_imu_ts = att.updated_at
                 real_turned = quat_angle_deg(q_start, att.quat)
                 progress = abs(real_turned - last_imu_turned)
@@ -505,19 +508,18 @@ class StudioRuntime:
                 break
 
             remaining = max(0.0, target_deg - est_turned)
-            spd = max(26.0, min(108.0, remaining * 2.5))
+            spd = max(30.0, min(125.0, remaining * 2.9))
 
-            # Parallel pitch overlap during final 38° of pan (negative body tilt increases downward IMU pitch)
+            # Overlap downward pitch during final 55° of pan (~1.0s saved!)
             tilt_cmd = 0.0
-            if overlap_pitch_target is not None and remaining <= 38.0:
+            if overlap_pitch_target is not None and remaining <= 55.0:
                 p_err = overlap_pitch_target - est_pitch
-                if p_err > 4.0:
-                    p_spd = max(18.0, min(68.0, p_err * 2.2))
+                if p_err > 3.5:
+                    p_spd = max(22.0, min(88.0, p_err * 2.6))
                     tilt_cmd = -p_spd
                     est_pitch += (p_spd * 0.72) * dt
 
             await self._send_body_speed(direction * spd, tilt_cmd)
-            # Dead-reckon pan angle between 1 Hz IMU packets (empirical gain ~0.85)
             est_turned += spd * 0.85 * dt
             await asyncio.sleep(0.05)
 
@@ -528,14 +530,17 @@ class StudioRuntime:
     async def _pivot_pan_back_to_quat(
         self,
         target_quat: tuple[float, float, float, float],
-        timeout_s: float = 4.5,
+        timeout_s: float = 3.8,
+        *,
+        overlap_pitch_target: float | None = None,
     ) -> float:
-        """Unwind horizontal Pan in reverse direction back to saved head quaternion (1 Hz IMU safe)."""
+        """Fast geodesic unwind back to Zach's face with simultaneous upward pitch lift (~1.3s total!)."""
         if not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
             return 0.0
         direction = -(self._last_pivot_dir or 1.0)
         last_imu_ts = self._osmo.last_attitude.updated_at
-        est_dist = quat_angle_deg(target_quat, self._osmo.last_attitude.quat) if self._osmo.last_attitude.quat else 150.0
+        est_dist = quat_angle_deg(target_quat, self._osmo.last_attitude.quat) if self._osmo.last_attitude.quat else 140.0
+        est_pitch = self._osmo.last_attitude.pitch_deg
         last_imu_dist = est_dist
         stalled_packets = 0
         last_t = time.monotonic()
@@ -560,14 +565,25 @@ class StudioRuntime:
                     stalled_packets = 0
                 last_imu_dist = real_dist
                 est_dist = real_dist
+                est_pitch = att.pitch_deg
                 if stalled_packets >= 2:
                     break
 
             if est_dist <= 8.0:
                 break
 
-            spd = max(24.0, min(108.0, est_dist * 2.5))
-            await self._send_body_speed(direction * spd, 0.0)
+            spd = max(28.0, min(125.0, est_dist * 2.9))
+            # Simultaneously lift pitch toward head level while unwinding pan (~0.8s saved!)
+            tilt_cmd = 0.0
+            if overlap_pitch_target is not None:
+                p_err = est_pitch - overlap_pitch_target  # positive when pitched down toward desk
+                if abs(p_err) > 3.5:
+                    p_spd = max(22.0, min(90.0, abs(p_err) * 2.8))
+                    # Positive body tilt lowers IMU pitch toward face level (+5°)
+                    tilt_cmd = p_spd if p_err > 0 else -p_spd
+                    est_pitch -= (tilt_cmd * 0.72) * dt
+
+            await self._send_body_speed(direction * spd, tilt_cmd)
             est_dist = max(0.0, est_dist - spd * 0.85 * dt)
             await asyncio.sleep(0.05)
 
@@ -756,8 +772,11 @@ class StudioRuntime:
                 self.camera_zoom if already_on_desk else float(self.desk_pose.get("default_zoom", 1.0))
             )
 
-        if not already_on_desk and self.hilight.connected:
-            self.hilight.start_reaction("sheet_search")
+        if not already_on_desk:
+            if self.screen_card.get("mode") != "none":
+                self.screen_card = {"mode": "none", "title": "", "items": [], "note": "", "updated_at": time.time()}
+            if self.hilight.connected:
+                self.hilight.start_reaction("sheet_search")
 
         async def _pivot_arm() -> tuple[float | None, float | None]:
             if already_on_desk or not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
@@ -947,15 +966,14 @@ class StudioRuntime:
                 ]
         return res
 
-    async def return_to_face_mode(self, *, search_if_missing: bool = True) -> dict[str, Any]:
-        """Closed-loop return to Dialogue mode synchronized with Apple Vision Face & Search FSM.
-
-        1. Switch to front 720p camera + move to calibrated face pose (or recenter Landscape) in parallel
-        2. Reset stale lost-face timers & wait for fresh vision tick so tracking_state is NEVER stale 'AI_HOLD'
-        3. Verify real Apple Vision face_detected; if missing and search_if_missing=True, run panoramic search until locked!
-        4. Return sensor ground truth + front frame so LLM NEVER hallucinates seeing the user or makes redundant set_tracking calls.
-        """
-        self.arbiter.log("ARM", "Retour en mode Dialogue (caméra avant + pose visage + vérif Apple Vision)")
+    async def return_to_face_mode(
+        self,
+        *,
+        search_if_missing: bool = True,
+        return_image: bool = True,
+    ) -> dict[str, Any]:
+        """Fast closed-loop return to Dialogue mode synchronized with Apple Vision Face & Search FSM."""
+        self.arbiter.log("ARM", "Retour rapide mode Dialogue (caméra avant + pivot simultané + vérif Apple Vision)")
         if self.hilight.connected:
             self.hilight.start_reaction("off")
 
@@ -964,11 +982,21 @@ class StudioRuntime:
                 return
             face_pitch = float(self.face_pose.get("pitch_deg", 5.0))
             if self._face_quat is not None and self._osmo.last_attitude is not None:
-                self._hw_busy_until = time.monotonic() + 7.5
+                self._hw_busy_until = time.monotonic() + 6.5
                 try:
-                    # 1. Lift camera back to head level first (safe desk clearance), then fast unwind to user's head!
-                    await self._servo_pitch_to_imu(face_pitch, timeout_s=1.8)
-                    rem = await self._pivot_pan_back_to_quat(self._face_quat, timeout_s=3.8)
+                    # Brief 0.22s upward clearance lift, then simultaneous fast Pan unwind + Pitch lift (~1.4s total!)
+                    if self._osmo.last_attitude.pitch_deg > 28.0:
+                        for _ in range(4):
+                            await self._send_body_speed(0.0, 80.0)
+                            await asyncio.sleep(0.05)
+                    rem = await self._pivot_pan_back_to_quat(
+                        self._face_quat,
+                        timeout_s=3.4,
+                        overlap_pitch_target=face_pitch,
+                    )
+                    # Fine pitch finish only if still > 6° off head level
+                    if self._osmo.last_attitude and abs(self._osmo.last_attitude.pitch_deg - face_pitch) > 6.0:
+                        await self._servo_pitch_to_imu(face_pitch, timeout_s=1.0)
                     self.arbiter.log("ARM", f"Retour géodésique sur la tête terminé (écart={rem:.0f}°)")
                 finally:
                     await self._send_body_speed(0.0, 0.0)
@@ -983,40 +1011,36 @@ class StudioRuntime:
         arm_task = asyncio.create_task(_return_arm())
         await asyncio.gather(cam_task, arm_task)
 
-        # Reset stale timers BEFORE re-enabling face tracking so FSM never fires a bogus immediate search!
         self.arbiter.reset_face_loss_timers()
         self.arbiter.desk_mode = False
         self.arbiter.ai_hold_mode = False
 
-        # Wait up to 0.9s for BOTH face lock AND fresh FSM state (never stale 'AI_HOLD'/'DESK_MODE'!)
         found = False
-        deadline = time.monotonic() + 0.9
+        deadline = time.monotonic() + 0.75
         while time.monotonic() < deadline:
             st = self.arbiter.latest.state
             if self.arbiter.latest.face_detected and st not in ("AI_HOLD", "DESK_MODE"):
                 found = True
                 break
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.04)
 
         searched = False
         if not found and search_if_missing and self.osmo_connected:
             searched = True
             self.arbiter.log("SEARCH", "Visage non détecté après recentrage → balayage panoramique connecté")
             self.arbiter.trigger_search_now()
-            search_deadline = time.monotonic() + 5.5
+            search_deadline = time.monotonic() + 5.0
             while time.monotonic() < search_deadline:
                 if self.arbiter.latest.face_detected:
                     found = True
-                    await asyncio.sleep(0.22)  # let PID settle on face
+                    await asyncio.sleep(0.20)
                     break
-                await asyncio.sleep(0.12)
+                await asyncio.sleep(0.10)
 
         interp = self.arbiter.latest
-        # Guarantee fresh tracking state string (never stale AI_HOLD after follow_face is already active!)
         fresh_state = interp.state
         if fresh_state in ("AI_HOLD", "DESK_MODE"):
             fresh_state = "CENTERED" if interp.face_detected else "SEARCHING" if searched else "IDLE"
-        jpeg = self._get_latest_frame_jpeg(high_res=False)
         res: dict[str, Any] = {
             "ok": True,
             "mode": "dialogue_face",
@@ -1027,9 +1051,11 @@ class StudioRuntime:
             "tracking_state": fresh_state,
             "searched_for_face": searched,
         }
-        if jpeg:
-            status_lbl = "VISAGE VERROUILLÉ" if interp.face_detected else "AUCUN VISAGE DÉTECTÉ"
-            res["_images"] = [{"label": f"Caméra avant ({status_lbl})", "jpeg": jpeg, "detail": "low"}]
+        if return_image:
+            jpeg = self._get_latest_frame_jpeg(high_res=False)
+            if jpeg:
+                status_lbl = "VISAGE VERROUILLÉ" if interp.face_detected else "AUCUN VISAGE DÉTECTÉ"
+                res["_images"] = [{"label": f"Caméra avant ({status_lbl})", "jpeg": jpeg, "detail": "low"}]
         return res
 
     async def execute_robot_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -1207,32 +1233,58 @@ class StudioRuntime:
                 return {"ok": True, "deleted": n}
             return {"ok": False, "error": f"Action mémoire inconnue: {act}"}
 
-        # --- 7. show_on_screen (interactive Pixel OLED checklist / concept card) ---
+        # --- 7. show_on_screen (interactive Pixel OLED exercise / checklist / concept + auto Show & Tell!) ---
         if name == "show_on_screen":
             mode = str(args.get("mode", "clear"))
+            face_user = bool(args.get("face_user", True))
+            spoken = str(args.get("spoken_summary") or "").strip()
+
             if mode == "clear":
                 self.screen_card = {"mode": "none", "title": "", "items": [], "note": "", "updated_at": time.time()}
                 self.arbiter.log("SCREEN", "Écran Pixel OLED remis en mode normal")
-                return {"ok": True, "mode": "clear"}
+                out: dict[str, Any] = {"ok": True, "mode": "clear"}
+                if spoken:
+                    out["_spoken_override"] = spoken
+                return out
+
             title = str(args.get("title") or "OSMO // NOTES").strip()[:60]
             raw_items = args.get("items") or []
             items = [
-                {"text": str(it).strip()[:120], "done": False}
+                {"text": str(it).strip()[:140], "done": False}
                 for it in raw_items[:5]
                 if str(it).strip()
             ]
-            note = str(args.get("note") or "").strip()[:160]
+            note = str(args.get("note") or "").strip()[:180]
+            clean_mode = mode if mode in ("exercise", "checklist", "concept") else "exercise"
             self.screen_card = {
-                "mode": mode if mode in ("checklist", "concept") else "checklist",
+                "mode": clean_mode,
                 "title": title,
                 "items": items,
                 "note": note,
                 "updated_at": time.time(),
             }
-            self.arbiter.log("SCREEN", f"Carte Pixel OLED [{self.screen_card['mode']}] : {title} ({len(items)} items)")
+            self.arbiter.log("SCREEN", f"Carte Pixel OLED [{clean_mode}] : {title} ({len(items)} items)")
+
+            # Natural "Show & Tell" choreography: if Osmo is currently facing the desk,
+            # automatically swing the Pixel OLED back toward Zach so he can read the screen right away!
+            turned_to_user = False
+            if face_user and self.arbiter.desk_mode:
+                turned_to_user = True
+                await self.return_to_face_mode(search_if_missing=False, return_image=False)
+
             if self.hilight.connected:
                 self.hilight.start_reaction("yes")
-            return {"ok": True, "mode": self.screen_card["mode"], "title": title, "items_count": len(items)}
+
+            out = {
+                "ok": True,
+                "mode": clean_mode,
+                "title": title,
+                "items_count": len(items),
+                "turned_to_user": turned_to_user,
+            }
+            if spoken:
+                out["_spoken_override"] = spoken
+            return out
 
         return {"ok": False, "error": f"Outil inconnu: {name}"}
 
@@ -1712,6 +1764,7 @@ class StudioRuntime:
                 "lost_policy": cfg.lost_policy,
             },
             "gestures": [{"id": k, "label": v[0]} for k, v in GESTURES.items()],
+            "ui_version": self.ui_version,
             "screen": self.screen_card,
             "memory": {
                 "stats": self.memory.stats(),

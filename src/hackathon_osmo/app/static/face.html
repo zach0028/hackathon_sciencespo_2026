@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
@@ -22,7 +22,7 @@
   <header id="hud-top" class="hud-top">
     <div class="hud-left">
       <span id="conn-dot" class="conn-dot"></span>
-      <span id="state-pill" class="mono-tag">IDLE</span>
+      <span id="state-pill" class="mono-tag">READY</span>
     </div>
     <div class="hud-right">
       <span id="pose-telemetry" class="mono-dim">Y +00.0° · P +00.0°</span>
@@ -37,44 +37,72 @@
     <div class="focus-sub">QUIET MODE · SWIPE UP TO WAKE</div>
   </section>
 
-  <!-- Mode B: Dialogue live caption (monochrome editorial hairline bar) -->
-  <div id="caption-wrap" class="caption-wrap hidden">
-    <span class="caption-prefix">OSMO //</span>
-    <p id="caption-text" class="caption-text"></p>
-  </div>
+  <!-- Mode B: Clean Desk Reading Status Strip (full-bleed 3D head looking down, NO raw transcript wall!) -->
+  <section id="desk-strip" class="desk-strip hidden" aria-hidden="true">
+    <div class="desk-strip-inner">
+      <div class="desk-strip-left">
+        <span id="desk-led-dot" class="desk-led-dot"></span>
+        <span id="desk-status-label" class="desk-strip-title">DESK // SHEET LOCKED</span>
+        <span id="desk-optics" class="desk-strip-optics">1.0× · 2.7K</span>
+      </div>
+      <div class="desk-strip-right">
+        <span id="desk-hilight-label" class="desk-strip-meta">HILIGHT // RING</span>
+        <button id="btn-desk-to-face" class="chip-btn">FACE ME ↗</button>
+      </div>
+    </div>
+    <div id="desk-scan-bar" class="desk-scan-bar hidden">
+      <div class="desk-scan-fill"></div>
+    </div>
+  </section>
 
-  <!-- Mode C: Desk Reading Blueprint Card (editorial marked.dev drafting grid) -->
-  <section id="desk-layer" class="desk-layer hidden" aria-hidden="true">
-    <div class="desk-card">
+  <!-- Mode C: Full-Bleed Interactive OLED Study Board (Exercise / Checklist / Concept) -->
+  <section id="board-layer" class="board-layer hidden" aria-hidden="true">
+    <div id="board-card" class="board-card" data-card-mode="exercise">
       <span class="corner tl">+</span>
       <span class="corner tr">+</span>
       <span class="corner bl">+</span>
       <span class="corner br">+</span>
 
-      <div class="desk-header">
-        <div class="desk-badge">
-          <span id="desk-led-dot" class="desk-led-dot"></span>
-          <span id="desk-status-label">DESK // READING</span>
+      <div class="board-header">
+        <div class="board-title-group">
+          <span id="board-mode-badge" class="board-mode-badge">EXERCISE</span>
+          <h1 id="board-title" class="board-title">BAC PRACTICE · HEAT TRANSFER</h1>
         </div>
-        <div id="desk-optics" class="desk-optics">1.0× · 2688×1512</div>
+        <div class="board-header-right">
+          <span id="board-progress-pill" class="mono-tag hidden">0 / 3</span>
+          <button id="btn-close-board" class="icon-close-btn" title="Close board">×</button>
+        </div>
       </div>
 
-      <div class="desk-divider"></div>
-
-      <div class="desk-body">
-        <p id="desk-reply" class="desk-reply">Waiting for document analysis…</p>
-        <ul id="screen-list" class="screen-list hidden"></ul>
-        <div id="screen-note" class="screen-note hidden"></div>
+      <div id="board-progress-track" class="board-progress-track hidden">
+        <div id="board-progress-fill" class="board-progress-fill"></div>
       </div>
 
-      <div class="desk-footer">
-        <div id="desk-scan-bar" class="desk-scan-bar hidden">
-          <div class="desk-scan-fill"></div>
+      <div class="board-divider"></div>
+
+      <div class="board-body">
+        <!-- Exercise mode: Given Data pill strip -->
+        <div id="board-given" class="board-given hidden">
+          <span class="given-tag">GIVEN</span>
+          <span id="board-given-text" class="given-text"></span>
         </div>
-        <div class="desk-meta-row">
-          <span id="desk-hilight-label">HILIGHT // RING-LIGHT</span>
-          <button id="btn-clear-card" class="btn-clear-card hidden">CLEAR ×</button>
-          <span id="desk-hint-right">DOUBLE-TAP : FACE</span>
+
+        <!-- Exercise / Checklist / Concept items -->
+        <ul id="board-list" class="board-list"></ul>
+
+        <!-- Exercise collapsible Hint OR Concept/Checklist takeaway note -->
+        <div id="board-hint-wrap" class="board-hint-wrap hidden">
+          <button id="btn-toggle-hint" class="btn-toggle-hint">HINT ▸ TAP TO REVEAL</button>
+          <div id="board-hint-box" class="board-hint-box hidden"></div>
+        </div>
+        <div id="board-note" class="board-note hidden"></div>
+      </div>
+
+      <div class="board-footer">
+        <span id="board-foot-guide" class="board-foot-guide">TAP HINT WHEN READY</span>
+        <div class="board-foot-actions">
+          <button id="btn-board-pivot" class="chip-btn primary">LOOK AT SHEET ↘</button>
+          <button id="btn-clear-card" class="chip-btn">CLEAR ×</button>
         </div>
       </div>
     </div>
@@ -84,26 +112,20 @@
   <div id="toast" class="toast hidden"></div>
 
   <!-- Discreet preview/demo dock (?demo=1 or bottom-right micro dot) -->
-  <button id="btn-demo-toggle" class="btn-demo-toggle" title="États & aperçu">+</button>
+  <button id="btn-demo-toggle" class="btn-demo-toggle" title="States & preview">+</button>
   <aside id="demo-dock" class="demo-dock hidden">
     <button data-demo="live">LIVE</button>
     <button data-demo="focus">QUIET</button>
-    <button data-demo="drowsy">DROWSY</button>
     <button data-demo="listen">LISTEN</button>
     <button data-demo="attentive">ATTENTIVE</button>
-    <button data-demo="barge_in">BARGE-IN</button>
     <button data-demo="think">THINK Δ</button>
-    <button data-demo="intent_desk">INTENT</button>
-    <button data-demo="focusing">AF SQUINT</button>
-    <button data-demo="reading">READING</button>
     <button data-demo="speak">SPEAK</button>
-    <button data-demo="greet">GREET</button>
+    <button data-demo="desk">DESK</button>
+    <button data-demo="exercise">EXERCISE</button>
+    <button data-demo="checklist">TO-DO</button>
+    <button data-demo="concept">CONCEPT</button>
     <button data-demo="yes">YES</button>
     <button data-demo="no">NO</button>
-    <button data-demo="curious">CURIOUS</button>
-    <button data-demo="search">SCAN</button>
-    <button data-demo="desk">DESK</button>
-    <button data-demo="checklist">TO-DO</button>
     <button id="btn-fs">FULL</button>
   </aside>
 
