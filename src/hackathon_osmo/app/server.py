@@ -347,6 +347,9 @@ async def ws_endpoint(ws: WebSocket) -> None:
             elif action == "recenter":
                 asyncio.create_task(runtime.recenter_landscape())
 
+            elif action == "wake_motors":
+                asyncio.create_task(runtime.wake_motors(manual=True))
+
             elif action == "toggle_orientation":
                 asyncio.create_task(runtime.toggle_orientation())
 

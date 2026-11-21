@@ -19,7 +19,9 @@ from hackathon_osmo.hardware.duml import (
     CrcProfile,
     DumlPacket,
     DumlStreamParser,
+    make_gimbal_resume_packet,
     make_gimbal_rotate_packet,
+    make_gimbal_set_mode_packet,
     make_gimbal_speed_packet,
 )
 
@@ -107,6 +109,8 @@ class OsmoBleClient:
         self._parser = DumlStreamParser()
         self._seq = 1
         self.last_attitude: GimbalAttitude | None = None
+        self.last_rx_at: float = 0.0
+        self.connected_at: float = 0.0
 
     async def __aenter__(self) -> OsmoBleClient:
         await self.connect()
@@ -117,7 +121,22 @@ class OsmoBleClient:
 
     async def connect(self) -> None:
         await self._client.connect()
-        await self._client.start_notify(CHAR_NOTIFY_FFF4, self._handle_notify)
+        try:
+            # macOS CoreBluetooth occasionally needs a brief beat after connect before GATT services settle
+            try:
+                await self._client.start_notify(CHAR_NOTIFY_FFF4, self._handle_notify)
+            except Exception:
+                await asyncio.sleep(0.35)
+                await self._client.start_notify(CHAR_NOTIFY_FFF4, self._handle_notify)
+            now = time.monotonic()
+            self.connected_at = now
+            self.last_rx_at = now
+        except Exception:
+            try:
+                await self._client.disconnect()
+            except Exception:
+                pass
+            raise
 
     async def disconnect(self) -> None:
         if self._client.is_connected:
@@ -135,6 +154,7 @@ class OsmoBleClient:
         return s
 
     def _handle_notify(self, _sender: object, data: bytearray) -> None:
+        self.last_rx_at = time.monotonic()
         for pkt in self._parser.feed(bytes(data)):
             if pkt.cmd_set == 0x04 and pkt.cmd_id == 0x05 and len(pkt.payload) >= 40:
                 # Live IMU quaternion (4 x float32 LE at offset 24)
@@ -185,6 +205,28 @@ class OsmoBleClient:
             payload=b"\x01\x01",
         ).encode(profile=self.profile)
         await self.send_raw(pkt)
+
+    async def send_resume_motors(self) -> None:
+        """Send DUML Resume/Exit-Standby command (CmdSet=0x04, CmdId=0x0D, payload=0x2AB5 LE)."""
+        pkt = make_gimbal_resume_packet(seq=self._next_seq(), profile=self.profile)
+        await self.send_raw(pkt)
+
+    async def send_follow_mode(self) -> None:
+        """Ensure Gimbal Follow mode is active (CmdSet=0x04, CmdId=0x4C, mode=0x00)."""
+        pkt = make_gimbal_set_mode_packet(mode=0x00, reset=False, seq=self._next_seq(), profile=self.profile)
+        await self.send_raw(pkt)
+
+    async def wake_motors_sequence(self) -> None:
+        """Multi-stage BLE wake sequence to exit OM3 standby and re-energize motor control."""
+        await self.send_resume_motors()
+        await asyncio.sleep(0.06)
+        await self.send_resume_motors()
+        await asyncio.sleep(0.06)
+        await self.send_follow_mode()
+        await asyncio.sleep(0.06)
+        await self.send_recenter()
+        await asyncio.sleep(0.08)
+        await self.send_speed(0.0, 0.0, 0.0, duration_ds=2)
 
     async def send_toggle_orientation(self) -> None:
         """Toggle Landscape <-> Portrait 90 deg roll (verified OM3 CmdSet=0x04 CmdId=0x3A payload=0100)."""

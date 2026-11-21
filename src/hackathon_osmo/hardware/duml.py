@@ -182,6 +182,69 @@ ROTATION_MODE_RELATIVE = 0x04
 ROTATION_MODE_ABSOLUTE = 0x05
 ROTATION_MODE_SPEED = 0x80
 
+# Reverse-engineered DJI Osmo DUML Gimbal Suspend/Resume magic constants (CmdSet=0x04, CmdId=0x0D)
+MOTOR_RESUME_MAGIC = 0x2AB5
+MOTOR_SUSPEND_MAGIC = 0x7EF2
+
+
+def make_gimbal_resume_packet(
+    seq: int = 1,
+    sender: int = 0x02,
+    receiver: int = 0x04,
+    profile: CrcProfile = CRC_CLASSIC,
+) -> bytes:
+    """Build DUML Gimbal Resume / Exit-Standby packet (CmdSet=0x04, CmdId=0x0D, payload=0x2AB5 LE)."""
+    pkt = DumlPacket(
+        sender=sender,
+        receiver=receiver,
+        seq=seq,
+        cmd_type=0x40,
+        cmd_set=0x04,
+        cmd_id=0x0D,
+        payload=struct.pack("<H", MOTOR_RESUME_MAGIC),
+    )
+    return pkt.encode(profile=profile)
+
+
+def make_gimbal_suspend_packet(
+    seq: int = 1,
+    sender: int = 0x02,
+    receiver: int = 0x04,
+    profile: CrcProfile = CRC_CLASSIC,
+) -> bytes:
+    """Build DUML Gimbal Suspend / Standby packet (CmdSet=0x04, CmdId=0x0D, payload=0x7EF2 LE)."""
+    pkt = DumlPacket(
+        sender=sender,
+        receiver=receiver,
+        seq=seq,
+        cmd_type=0x40,
+        cmd_set=0x04,
+        cmd_id=0x0D,
+        payload=struct.pack("<H", MOTOR_SUSPEND_MAGIC),
+    )
+    return pkt.encode(profile=profile)
+
+
+def make_gimbal_set_mode_packet(
+    mode: int = 0x00,
+    reset: bool = False,
+    seq: int = 1,
+    sender: int = 0x02,
+    receiver: int = 0x04,
+    profile: CrcProfile = CRC_CLASSIC,
+) -> bytes:
+    """Build DUML Gimbal Mode/Reset packet (CmdSet=0x04, CmdId=0x4C: mode=0 Follow, 1 Lock, 2 FPV)."""
+    pkt = DumlPacket(
+        sender=sender,
+        receiver=receiver,
+        seq=seq,
+        cmd_type=0x40,
+        cmd_set=0x04,
+        cmd_id=0x4C,
+        payload=bytes([mode & 0xFF, 0x01 if reset else 0x00]),
+    )
+    return pkt.encode(profile=profile)
+
 
 def make_gimbal_rotate_packet(
     yaw: int = 0,

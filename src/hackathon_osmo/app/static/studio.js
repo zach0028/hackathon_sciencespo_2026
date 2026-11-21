@@ -203,8 +203,23 @@ function render(s) {
       : 'HILIGHT · WAIT';
   }
 
-  document.getElementById('dot-osmo').className = 'dot ' + (s.osmo.connected ? 'ok' : 'err');
-  document.getElementById('lbl-osmo').textContent = s.osmo.connected ? `OSMO · ${s.osmo.name}` : 'OSMO · OFFLINE';
+  const mState = s.osmo.motor_state || 'active';
+  if (!s.osmo.connected) {
+    document.getElementById('dot-osmo').className = 'dot err';
+    document.getElementById('lbl-osmo').textContent = 'OSMO · OFFLINE';
+  } else if (mState === 'thermal_protection') {
+    document.getElementById('dot-osmo').className = 'dot err';
+    document.getElementById('lbl-osmo').textContent = 'OSMO · PROTECTION (M)';
+  } else if (mState === 'standby_recovering') {
+    document.getElementById('dot-osmo').className = 'dot warn';
+    document.getElementById('lbl-osmo').textContent = 'OSMO · WAKING…';
+  } else if (mState === 'stall_relief') {
+    document.getElementById('dot-osmo').className = 'dot warn';
+    document.getElementById('lbl-osmo').textContent = 'OSMO · END-STOP';
+  } else {
+    document.getElementById('dot-osmo').className = 'dot ok';
+    document.getElementById('lbl-osmo').textContent = `OSMO · ${s.osmo.name}`;
+  }
 
   const btnLive = document.getElementById('btn-live');
   btnLive.textContent = s.osmo.live_motors ? 'MOTORS : LIVE' : 'MOTORS : DRY-RUN';

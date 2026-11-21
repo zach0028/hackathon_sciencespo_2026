@@ -462,7 +462,8 @@ class GeminiLiveBrain:
     # ------------------------------------------------------------------
 
     async def run_live_bridge(self, client_ws: WebSocket) -> None:
-        """Bridge browser PCM16 audio <-> Gemini 3.8 Live with direct NON_BLOCKING hardware tools."""
+        """Bridge browser PCM16 audio <-> Gemini 3.8 Live with direct NON_BLOCKING hardware tools
+        and transparent Session Resumption across ~10-min server rollovers (goAway / Wi-Fi blips)."""
         if not self.api_key:
             await client_ws.send_text(json.dumps({"type": "error", "message": "GEMINI_API_KEY manquante dans .env"}))
             await client_ws.close()
@@ -475,258 +476,311 @@ class GeminiLiveBrain:
         self._bot_expr_fired = False
         self._last_user_text = ""
 
-        setup_msg: dict[str, Any] = {
-            "setup": {
-                "model": f"models/{self.live_model}",
-                "generationConfig": {
-                    "responseModalities": ["AUDIO"],
-                    "speechConfig": {
-                        "voiceConfig": {
-                            "prebuiltVoiceConfig": {"voiceName": self.voice},
-                        }
-                    },
-                },
-                "systemInstruction": {
-                    "parts": [{"text": self.live_instructions()}],
-                },
-                "tools": [
-                    {
-                        "functionDeclarations": openai_tools_to_gemini(
-                            ROBOT_TOOLS,
-                            non_blocking=True,
-                        )
-                    }
-                ],
-                "inputAudioTranscription": {},
-                "outputAudioTranscription": {},
-                "contextWindowCompression": {"slidingWindow": {}},
-            }
-        }
+        client_closed = asyncio.Event()
+        resume_handle: str | None = None
+        sent_ready = False
+        reconnects = 0
 
-        self._log("GEMINI", f"Connexion {self.live_model} (voix={self.voice}, lang={self.language.upper()})…")
+        async def browser_to_gemini() -> None:
+            try:
+                while not client_closed.is_set():
+                    msg = await client_ws.receive()
+                    if msg["type"] == "websocket.disconnect":
+                        break
+                    raw_bytes = msg.get("bytes")
+                    if raw_bytes:
+                        if self._gemini_ws is not None:
+                            b64_pcm = base64.b64encode(raw_bytes).decode("ascii")
+                            await self._send_gemini_json(
+                                {
+                                    "realtimeInput": {
+                                        "audio": {
+                                            "mimeType": "audio/pcm;rate=16000",
+                                            "data": b64_pcm,
+                                        }
+                                    }
+                                }
+                            )
+                        continue
+                    raw_txt = msg.get("text")
+                    if raw_txt:
+                        try:
+                            ev = json.loads(raw_txt)
+                        except Exception:
+                            continue
+                        ev_type = ev.get("type")
+                        if ev_type == "audio_stream_end":
+                            await self._send_gemini_json({"realtimeInput": {"audioStreamEnd": True}})
+                        elif ev_type == "text" and ev.get("text"):
+                            txt = str(ev["text"]).strip()
+                            if txt:
+                                self._last_user_text = txt
+                                self._last_activity_t = time.monotonic()
+                                await self._send_gemini_json({"realtimeInput": {"text": txt}})
+                        elif ev_type == "stop":
+                            break
+            except WebSocketDisconnect:
+                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._log("GEMINI", f"Bridge browser->Gemini arrêté : {exc}")
+            finally:
+                client_closed.set()
 
-        try:
-            async with websockets.connect(
-                GEMINI_LIVE_WS_URL,
-                additional_headers={"x-goog-api-key": self.api_key},
-                ping_interval=20,
-                ping_timeout=20,
-                max_size=16 * 1024 * 1024,
-                open_timeout=12,
-            ) as g_ws:
-                self._gemini_ws = g_ws
-                await self._send_gemini_json(setup_msg)
-
-                # Wait for setupComplete
-                raw_setup = await asyncio.wait_for(g_ws.recv(), timeout=12.0)
-                setup_resp = json.loads(raw_setup.decode("utf-8") if isinstance(raw_setup, bytes) else raw_setup)
-                if "setupComplete" not in setup_resp:
-                    raise RuntimeError(f"Setup Gemini Live inattendu : {list(setup_resp.keys())}")
-
-                self.live_connected = True
-                self.sideband_connected = True
-                self._last_activity_t = time.monotonic()
-                self._log("GEMINI", f"{self.live_model} connecté (session={self.session_id}, outils NON_BLOCKING actifs)")
-                await client_ws.send_text(
-                    json.dumps(
-                        {
-                            "type": "ready",
-                            "session_id": self.session_id,
-                            "model": self.live_model,
-                            "voice": self.voice,
-                        }
-                    )
-                )
-
-                stop_evt = asyncio.Event()
-
-                async def browser_to_gemini() -> None:
-                    try:
-                        while not stop_evt.is_set():
-                            msg = await client_ws.receive()
-                            if msg["type"] == "websocket.disconnect":
-                                break
-                            raw_bytes = msg.get("bytes")
-                            if raw_bytes:
-                                b64_pcm = base64.b64encode(raw_bytes).decode("ascii")
+        async def vision_heartbeat() -> None:
+            """Stream smart low-bandwidth camera frames (640px) only when active & not pivoting."""
+            try:
+                first_frame = True
+                await asyncio.sleep(0.6)
+                while not client_closed.is_set():
+                    recently_active = first_frame or (time.monotonic() - self._last_activity_t) < 30.0
+                    ctx_now = self.on_get_context() if self.on_get_context else ""
+                    is_pivoting = "pivoting=True" in ctx_now
+                    if (
+                        self._gemini_ws is not None
+                        and self.use_vision
+                        and self.on_get_frame
+                        and not self.busy
+                        and not is_pivoting
+                        and recently_active
+                    ):
+                        raw_jpg = self.on_get_frame(False)
+                        if raw_jpg:
+                            small_jpg = await asyncio.to_thread(prepare_vision_jpeg, raw_jpg, high_res=False)
+                            if small_jpg:
                                 await self._send_gemini_json(
                                     {
                                         "realtimeInput": {
-                                            "audio": {
-                                                "mimeType": "audio/pcm;rate=16000",
-                                                "data": b64_pcm,
+                                            "video": {
+                                                "mimeType": "image/jpeg",
+                                                "data": base64.b64encode(small_jpg).decode("ascii"),
                                             }
                                         }
                                     }
                                 )
-                                continue
-                            raw_txt = msg.get("text")
-                            if raw_txt:
-                                try:
-                                    ev = json.loads(raw_txt)
-                                except Exception:
-                                    continue
-                                ev_type = ev.get("type")
-                                if ev_type == "audio_stream_end":
-                                    await self._send_gemini_json({"realtimeInput": {"audioStreamEnd": True}})
-                                elif ev_type == "text" and ev.get("text"):
-                                    txt = str(ev["text"]).strip()
-                                    if txt:
-                                        self._last_user_text = txt
-                                        self._last_activity_t = time.monotonic()
-                                        await self._send_gemini_json({"realtimeInput": {"text": txt}})
-                                elif ev_type == "stop":
-                                    break
-                    except WebSocketDisconnect:
-                        pass
-                    except asyncio.CancelledError:
+                                first_frame = False
+                    await asyncio.sleep(5.0)
+            except asyncio.CancelledError:
+                raise
+
+        browser_task: asyncio.Task[None] | None = None
+        vision_task: asyncio.Task[None] | None = None
+
+        try:
+            while not client_closed.is_set() and reconnects <= 10:
+                resumption_cfg: dict[str, Any] = {"handle": resume_handle} if resume_handle else {}
+                setup_msg: dict[str, Any] = {
+                    "setup": {
+                        "model": f"models/{self.live_model}",
+                        "generationConfig": {
+                            "responseModalities": ["AUDIO"],
+                            "speechConfig": {
+                                "voiceConfig": {
+                                    "prebuiltVoiceConfig": {"voiceName": self.voice},
+                                }
+                            },
+                        },
+                        "systemInstruction": {
+                            "parts": [{"text": self.live_instructions()}],
+                        },
+                        "tools": [
+                            {
+                                "functionDeclarations": openai_tools_to_gemini(
+                                    ROBOT_TOOLS,
+                                    non_blocking=True,
+                                )
+                            }
+                        ],
+                        "inputAudioTranscription": {},
+                        "outputAudioTranscription": {},
+                        "contextWindowCompression": {"slidingWindow": {}},
+                        "sessionResumption": resumption_cfg,
+                    }
+                }
+
+                if reconnects == 0:
+                    self._log("GEMINI", f"Connexion {self.live_model} (voix={self.voice}, lang={self.language.upper()})…")
+                else:
+                    self._log(
+                        "GEMINI",
+                        f"Reprise transparente {self.live_model} (#{reconnects}, handle={'OK' if resume_handle else 'new'})…",
+                    )
+
+                try:
+                    async with websockets.connect(
+                        GEMINI_LIVE_WS_URL,
+                        additional_headers={"x-goog-api-key": self.api_key},
+                        ping_interval=20,
+                        ping_timeout=20,
+                        max_size=16 * 1024 * 1024,
+                        open_timeout=12,
+                    ) as g_ws:
+                        self._gemini_ws = g_ws
+                        await self._send_gemini_json(setup_msg)
+
+                        raw_setup = await asyncio.wait_for(g_ws.recv(), timeout=12.0)
+                        setup_resp = json.loads(raw_setup.decode("utf-8") if isinstance(raw_setup, bytes) else raw_setup)
+                        if "setupComplete" not in setup_resp:
+                            raise RuntimeError(f"Setup Gemini Live inattendu : {list(setup_resp.keys())}")
+
+                        self.live_connected = True
+                        self.sideband_connected = True
+                        self._last_activity_t = time.monotonic()
+
+                        if not sent_ready:
+                            sent_ready = True
+                            self._log(
+                                "GEMINI",
+                                f"{self.live_model} connecté (session={self.session_id}, outils NON_BLOCKING + reprise auto)",
+                            )
+                            await client_ws.send_text(
+                                json.dumps(
+                                    {
+                                        "type": "ready",
+                                        "session_id": self.session_id,
+                                        "model": self.live_model,
+                                        "voice": self.voice,
+                                    }
+                                )
+                            )
+                            browser_task = asyncio.create_task(browser_to_gemini())
+                            vision_task = asyncio.create_task(vision_heartbeat())
+
+                        upstream_done = asyncio.Event()
+
+                        async def gemini_to_browser() -> None:
+                            nonlocal resume_handle
+                            turn_tools: list[str] = []
+                            try:
+                                async for raw in g_ws:
+                                    if client_closed.is_set():
+                                        break
+                                    ev = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+
+                                    # Track Gemini Session Resumption handle + GoAway rollover notice!
+                                    sru = ev.get("sessionResumptionUpdate")
+                                    if isinstance(sru, dict) and sru.get("newHandle"):
+                                        resume_handle = str(sru["newHandle"])
+                                    if "goAway" in ev:
+                                        self._log("GEMINI", "Signal goAway reçu — bascule transparente sur nouvelle connexion…")
+                                        break
+
+                                    # 1. Server content (audio chunks, transcripts, interruption, turnComplete)
+                                    sc = ev.get("serverContent")
+                                    if isinstance(sc, dict):
+                                        if sc.get("interrupted"):
+                                            self.speaking = False
+                                            self.micro_barge_in_t = time.monotonic()
+                                            self._set_micro("user_speaking", pulse=True, tool_intent="")
+                                            self._bot_expr_fired = False
+                                            try:
+                                                await client_ws.send_text(json.dumps({"type": "interrupted"}))
+                                            except Exception:
+                                                pass
+
+                                        model_turn = sc.get("modelTurn")
+                                        if isinstance(model_turn, dict):
+                                            for part in model_turn.get("parts") or []:
+                                                if not isinstance(part, dict):
+                                                    continue
+                                                inline = part.get("inlineData")
+                                                if isinstance(inline, dict) and inline.get("data"):
+                                                    mime = str(inline.get("mimeType") or "")
+                                                    if "audio" in mime:
+                                                        if not self.speaking:
+                                                            self.speaking = True
+                                                            self._set_micro("speaking", pulse=True, tool_intent="")
+                                                        pcm_out = base64.b64decode(inline["data"])
+                                                        await client_ws.send_bytes(pcm_out)
+
+                                        in_tr = sc.get("inputTranscription")
+                                        if isinstance(in_tr, dict) and in_tr.get("text"):
+                                            chunk = str(in_tr["text"])
+                                            self._user_transcript_buf += chunk
+                                            self._last_user_text = self._user_transcript_buf.strip()
+                                            self._last_activity_t = time.monotonic()
+                                            if not self.speaking and not self.busy:
+                                                self._set_micro("user_speaking", pulse=True)
+
+                                        out_tr = sc.get("outputTranscription")
+                                        if isinstance(out_tr, dict) and out_tr.get("text"):
+                                            chunk = str(out_tr["text"])
+                                            self._bot_transcript_buf += chunk
+                                            if not self._bot_expr_fired and self.on_auto_express:
+                                                inferred = infer_micro_expression(self._bot_transcript_buf, final=False)
+                                                if inferred:
+                                                    self._bot_expr_fired = True
+                                                    self.on_auto_express(inferred[0], inferred[1])
+
+                                        if sc.get("turnComplete"):
+                                            self.speaking = False
+                                            if not self.busy:
+                                                self._set_micro("idle", tool_intent="")
+                                            u_txt = self._user_transcript_buf.strip()
+                                            b_txt = self._bot_transcript_buf.strip()
+                                            if not self._bot_expr_fired and b_txt and self.on_auto_express:
+                                                inferred = infer_micro_expression(b_txt, final=True)
+                                                if inferred:
+                                                    self.on_auto_express(inferred[0], inferred[1])
+                                            if u_txt or b_txt:
+                                                self._append_ui_transcript(
+                                                    user=u_txt or "(audio)",
+                                                    reply=b_txt or "…",
+                                                    source="live",
+                                                    tools=list(turn_tools),
+                                                    brain_ms=self.last_brain_ms if turn_tools else 0.0,
+                                                )
+                                                if self.memory is not None and (u_txt or b_txt):
+                                                    ctx_now = self.on_get_context() if self.on_get_context else ""
+                                                    self.memory.record_episode(
+                                                        u_txt,
+                                                        b_txt,
+                                                        mode="desk" if "mode_bureau=True" in ctx_now else "face",
+                                                        tools=list(turn_tools),
+                                                    )
+                                            self._user_transcript_buf = ""
+                                            self._bot_transcript_buf = ""
+                                            self._bot_expr_fired = False
+                                            turn_tools.clear()
+
+                                    # 2. Direct asynchronous NON_BLOCKING hardware tool calls!
+                                    tc_obj = ev.get("toolCall")
+                                    if isinstance(tc_obj, dict) and tc_obj.get("functionCalls"):
+                                        fcalls = list(tc_obj["functionCalls"])
+                                        task = asyncio.create_task(self._execute_live_tool_calls(fcalls, turn_tools))
+                                        self._active_tools.add(task)
+                                        task.add_done_callback(self._active_tools.discard)
+
+                            except websockets.ConnectionClosed as exc:
+                                self._log("GEMINI", f"Lien {self.live_model} coupé ({exc.code}) — tentative reprise…")
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception as exc:
+                                self._log("GEMINI", f"Erreur lecture {self.live_model} : {exc}")
+                            finally:
+                                upstream_done.set()
+
+                        read_task = asyncio.create_task(gemini_to_browser())
+                        wait_client = asyncio.create_task(client_closed.wait())
+                        wait_upstream = asyncio.create_task(upstream_done.wait())
+                        await asyncio.wait({wait_client, wait_upstream}, return_when=asyncio.FIRST_COMPLETED)
+                        wait_client.cancel()
+                        wait_upstream.cancel()
+                        read_task.cancel()
+                        await asyncio.gather(read_task, return_exceptions=True)
+                        self._gemini_ws = None
+
+                except Exception as exc:
+                    self._gemini_ws = None
+                    if not sent_ready:
                         raise
-                    except Exception as exc:
-                        self._log("GEMINI", f"Bridge browser->Gemini arrêté : {exc}")
-                    finally:
-                        stop_evt.set()
+                    self._log("GEMINI", f"Reconnexion {self.live_model} après coupure ({exc})…")
 
-                async def vision_heartbeat() -> None:
-                    """Stream smart low-bandwidth camera frames (640px) only when active & not pivoting."""
-                    try:
-                        first_frame = True
-                        await asyncio.sleep(0.6)
-                        while not stop_evt.is_set():
-                            recently_active = first_frame or (time.monotonic() - self._last_activity_t) < 30.0
-                            ctx_now = self.on_get_context() if self.on_get_context else ""
-                            is_pivoting = "pivoting=True" in ctx_now
-                            if self.use_vision and self.on_get_frame and not self.busy and not is_pivoting and recently_active:
-                                raw_jpg = self.on_get_frame(False)
-                                if raw_jpg:
-                                    small_jpg = await asyncio.to_thread(prepare_vision_jpeg, raw_jpg, high_res=False)
-                                    if small_jpg:
-                                        await self._send_gemini_json(
-                                            {
-                                                "realtimeInput": {
-                                                    "video": {
-                                                        "mimeType": "image/jpeg",
-                                                        "data": base64.b64encode(small_jpg).decode("ascii"),
-                                                    }
-                                                }
-                                            }
-                                        )
-                                        first_frame = False
-                            await asyncio.sleep(5.0)
-                    except asyncio.CancelledError:
-                        raise
-
-                async def gemini_to_browser() -> None:
-                    turn_tools: list[str] = []
-                    try:
-                        async for raw in g_ws:
-                            if stop_evt.is_set():
-                                break
-                            ev = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
-
-                            # 1. Server content (audio chunks, transcripts, interruption, turnComplete)
-                            sc = ev.get("serverContent")
-                            if isinstance(sc, dict):
-                                if sc.get("interrupted"):
-                                    self.speaking = False
-                                    self.micro_barge_in_t = time.monotonic()
-                                    self._set_micro("user_speaking", pulse=True, tool_intent="")
-                                    self._bot_expr_fired = False
-                                    try:
-                                        await client_ws.send_text(json.dumps({"type": "interrupted"}))
-                                    except Exception:
-                                        pass
-
-                                model_turn = sc.get("modelTurn")
-                                if isinstance(model_turn, dict):
-                                    for part in model_turn.get("parts") or []:
-                                        if not isinstance(part, dict):
-                                            continue
-                                        inline = part.get("inlineData")
-                                        if isinstance(inline, dict) and inline.get("data"):
-                                            mime = str(inline.get("mimeType") or "")
-                                            if "audio" in mime:
-                                                if not self.speaking:
-                                                    self.speaking = True
-                                                    self._set_micro("speaking", pulse=True, tool_intent="")
-                                                pcm_out = base64.b64decode(inline["data"])
-                                                await client_ws.send_bytes(pcm_out)
-
-                                in_tr = sc.get("inputTranscription")
-                                if isinstance(in_tr, dict) and in_tr.get("text"):
-                                    chunk = str(in_tr["text"])
-                                    self._user_transcript_buf += chunk
-                                    self._last_user_text = self._user_transcript_buf.strip()
-                                    self._last_activity_t = time.monotonic()
-                                    if not self.speaking and not self.busy:
-                                        self._set_micro("user_speaking", pulse=True)
-
-                                out_tr = sc.get("outputTranscription")
-                                if isinstance(out_tr, dict) and out_tr.get("text"):
-                                    chunk = str(out_tr["text"])
-                                    self._bot_transcript_buf += chunk
-                                    if not self._bot_expr_fired and self.on_auto_express:
-                                        inferred = infer_micro_expression(self._bot_transcript_buf, final=False)
-                                        if inferred:
-                                            self._bot_expr_fired = True
-                                            self.on_auto_express(inferred[0], inferred[1])
-
-                                if sc.get("turnComplete"):
-                                    self.speaking = False
-                                    if not self.busy:
-                                        self._set_micro("idle", tool_intent="")
-                                    u_txt = self._user_transcript_buf.strip()
-                                    b_txt = self._bot_transcript_buf.strip()
-                                    if not self._bot_expr_fired and b_txt and self.on_auto_express:
-                                        inferred = infer_micro_expression(b_txt, final=True)
-                                        if inferred:
-                                            self.on_auto_express(inferred[0], inferred[1])
-                                    if u_txt or b_txt:
-                                        self._append_ui_transcript(
-                                            user=u_txt or "(audio)",
-                                            reply=b_txt or "…",
-                                            source="live",
-                                            tools=list(turn_tools),
-                                            brain_ms=self.last_brain_ms if turn_tools else 0.0,
-                                        )
-                                        if self.memory is not None and (u_txt or b_txt):
-                                            ctx_now = self.on_get_context() if self.on_get_context else ""
-                                            self.memory.record_episode(
-                                                u_txt,
-                                                b_txt,
-                                                mode="desk" if "mode_bureau=True" in ctx_now else "face",
-                                                tools=list(turn_tools),
-                                            )
-                                    self._user_transcript_buf = ""
-                                    self._bot_transcript_buf = ""
-                                    self._bot_expr_fired = False
-                                    turn_tools.clear()
-
-                            # 2. Direct asynchronous NON_BLOCKING hardware tool calls!
-                            tc_obj = ev.get("toolCall")
-                            if isinstance(tc_obj, dict) and tc_obj.get("functionCalls"):
-                                fcalls = list(tc_obj["functionCalls"])
-                                task = asyncio.create_task(self._execute_live_tool_calls(fcalls, turn_tools))
-                                self._active_tools.add(task)
-                                task.add_done_callback(self._active_tools.discard)
-
-                    except websockets.ConnectionClosed as exc:
-                        self._log("GEMINI", f"Session {self.live_model} fermée ({exc.code} {exc.reason})")
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        self._log("GEMINI", f"Erreur lecture {self.live_model} : {exc}")
-                    finally:
-                        stop_evt.set()
-
-                tasks = [
-                    asyncio.create_task(browser_to_gemini()),
-                    asyncio.create_task(gemini_to_browser()),
-                    asyncio.create_task(vision_heartbeat()),
-                ]
-                await stop_evt.wait()
-                for t in tasks:
-                    t.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                if client_closed.is_set():
+                    break
+                reconnects += 1
+                await asyncio.sleep(0.4)
 
         except Exception as exc:
             self._log("GEMINI", f"Erreur connexion {self.live_model} : {exc}")
@@ -735,6 +789,11 @@ class GeminiLiveBrain:
             except Exception:
                 pass
         finally:
+            client_closed.set()
+            for t in (browser_task, vision_task):
+                if t is not None:
+                    t.cancel()
+            await asyncio.gather(*(t for t in (browser_task, vision_task) if t is not None), return_exceptions=True)
             await self.stop_live_session()
             try:
                 await client_ws.close()

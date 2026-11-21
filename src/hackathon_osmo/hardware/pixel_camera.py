@@ -87,6 +87,68 @@ def list_adb_devices() -> list[AdbDevice]:
     return devices
 
 
+def kill_stale_scrcpy(serial: str | None = None) -> None:
+    """Terminate any lingering scrcpy-server process on Android so Camera2 HAL releases cleanly."""
+    adb = find_adb()
+    if not adb:
+        return
+    cmd = [adb]
+    if serial:
+        cmd.extend(["-s", serial])
+    cmd.extend(["shell", "pkill -f com.genymobile.scrcpy.Server || true"])
+    subprocess.run(cmd, capture_output=True, check=False, timeout=4)
+
+
+def auto_reconnect_adb_wifi(last_wifi_serial: str | None = None, studio_port: int = 8765) -> str | None:
+    """Attempt automatic ADB-over-Wi-Fi reconnection via the Mac's default gateway (Pixel Hotspot) or last IP."""
+    adb = find_adb()
+    if not adb:
+        return None
+    candidates: list[str] = []
+    if last_wifi_serial and ":" in last_wifi_serial:
+        candidates.append(last_wifi_serial)
+    try:
+        res = subprocess.run(
+            ["route", "-n", "get", "default"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+        for line in res.stdout.splitlines():
+            if "gateway:" in line:
+                gw = line.split("gateway:", 1)[1].strip()
+                if gw and "." in gw:
+                    cand = f"{gw}:5555"
+                    if cand not in candidates:
+                        candidates.append(cand)
+    except Exception:
+        pass
+
+    for target in candidates:
+        try:
+            r = subprocess.run(
+                [adb, "connect", target],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=3,
+            )
+            out = (r.stdout + r.stderr).lower()
+            if "connected to" in out or "already connected" in out:
+                # Immediately restore adb reverse so Pixel OLED OsmoFace stays connected!
+                subprocess.run(
+                    [adb, "-s", target, "reverse", f"tcp:{int(studio_port)}", f"tcp:{int(studio_port)}"],
+                    capture_output=True,
+                    check=False,
+                    timeout=3,
+                )
+                return target
+        except Exception:
+            continue
+    return None
+
+
 def list_pixel_cameras(serial: str | None = None) -> str:
     scrcpy = find_scrcpy()
     if not scrcpy:
@@ -167,6 +229,10 @@ class PixelCameraStream:
         was_cached = (self.serial, version) in self._pushed_devices
 
         for attempt in range(2):
+            if attempt > 0:
+                # Clear any zombie scrcpy-server holding Android Camera2 HAL before retrying!
+                kill_stale_scrcpy(self.serial)
+                time.sleep(0.28)
             # 1. Push scrcpy-server once per device (must be read-only on Android 14+ W^X) & forward socket
             self._ensure_server_pushed(server_path, version, force=(attempt > 0))
             subprocess.run(

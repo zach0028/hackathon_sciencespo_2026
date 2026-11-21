@@ -29,9 +29,15 @@ from hackathon_osmo.control.motion import (
     screen_to_motor,
     wrap_angle_deg,
 )
+from hackathon_osmo.control.watchdog import MotorWatchdog
 from hackathon_osmo.hardware.duml import CRC_CLASSIC, make_gimbal_joystick_packet
 from hackathon_osmo.hardware.osmo_ble import OsmoBleClient, discover_osmo, quat_angle_deg
-from hackathon_osmo.hardware.pixel_camera import PixelCameraStream, list_adb_devices
+from hackathon_osmo.hardware.pixel_camera import (
+    PixelCameraStream,
+    auto_reconnect_adb_wifi,
+    kill_stale_scrcpy,
+    list_adb_devices,
+)
 from hackathon_osmo.hardware.pixel_hilight import PixelHiLight
 from hackathon_osmo.paths import CALIBRATION_FILE
 from hackathon_osmo.telemetry.recorder import SessionRecorder
@@ -122,6 +128,8 @@ class StudioRuntime:
         self._imu_tick: int = 0
 
         self.pixel_serial: str | None = None
+        self._last_wifi_serial: str | None = None
+        self._last_adb_probe_t: float = 0.0
         self.camera_status: str = "disconnected"
         self._optical_phase: str = ""
         self.osmo_name: str | None = None
@@ -135,6 +143,7 @@ class StudioRuntime:
         self._idle_zero_sent: int = 0
         self._last_ble_tx_t: float = 0.0
         self._limp_warn_t: float = 0.0
+        self.watchdog = MotorWatchdog()
         self._prewarm_desk_task: asyncio.Task[tuple[float | None, float | None]] | None = None
         self._prewarm_face_task: asyncio.Task[None] | None = None
 
@@ -1478,6 +1487,25 @@ class StudioRuntime:
             speak_via_live=self.brain.sideband_connected,
         )
 
+    async def wake_motors(self, *, manual: bool = False) -> bool:
+        """Send multi-stage DUML Resume/Exit-Standby sequence (CmdId=0x0D 0x2AB5 + 0x4C) to OM3."""
+        if not self._osmo or not self.osmo_connected:
+            return False
+        if manual:
+            self.watchdog.reset()
+            self.arbiter.live_motors = True
+            self.arbiter.log("OSMO", "Réveil manuel moteurs OM3 (CmdId 0x0D 0x2AB5 + Follow + Recenter)…")
+        try:
+            self._hw_busy_until = max(self._hw_busy_until, time.monotonic() + 1.2)
+            await self._osmo.wake_motors_sequence()
+            self.watchdog.note_ble_tx(is_resume=True)
+            self.osmo_tx_packets += 5
+            self.osmo_last_tx = "wake 0x0D+0x4C"
+            return True
+        except Exception as exc:
+            self.arbiter.log("WARN", f"Échec séquence réveil BLE : {exc}")
+            return False
+
     async def start(self) -> None:
         self._running = True
         self.arbiter.log(
@@ -1621,9 +1649,18 @@ class StudioRuntime:
                 devs = [d for d in list_adb_devices() if d.state == "device"]
                 if not devs:
                     self.camera_status = "waiting_adb"
+                    now_adb = time.monotonic()
+                    if (now_adb - self._last_adb_probe_t) >= 4.0:
+                        self._last_adb_probe_t = now_adb
+                        reconnected = await asyncio.to_thread(auto_reconnect_adb_wifi, self._last_wifi_serial)
+                        if reconnected:
+                            self.arbiter.log("PIXEL", f"Reconnexion ADB Wi-Fi auto réussie ({reconnected}) + adb reverse restauré")
+                            continue
                     await asyncio.sleep(1.5)
                     continue
                 self.pixel_serial = devs[0].serial
+                if ":" in self.pixel_serial:
+                    self._last_wifi_serial = self.pixel_serial
                 self.camera_status = f"starting_{self.facing}"
                 start_gen = self._camera_gen
                 try:
@@ -1652,9 +1689,15 @@ class StudioRuntime:
                         f"{self.width}x{self.height}@{self.fps}fps · zoom={self.camera_zoom:.2f}x actif",
                     )
                 except Exception as exc:
-                    self.camera_status = f"error: {exc}"
-                    self.arbiter.log("CAMERA", f"Erreur caméra : {exc}")
-                    await asyncio.sleep(2.0)
+                    err_s = str(exc)
+                    self.camera_status = f"error: {err_s}"
+                    self.arbiter.log("CAMERA", f"Erreur caméra : {err_s}")
+                    # Auto-heal Camera2 HAL zombie scrcpy + automatic 4K -> 2.7K fallback!
+                    await asyncio.to_thread(kill_stale_scrcpy, self.pixel_serial)
+                    if self.facing == "back" and self.width >= 3840:
+                        self.width, self.height, self.camera_bitrate = 2688, 1512, 16_000_000
+                        self.arbiter.log("CAMERA", "Fallback auto 4K → 2.7K (2688×1512) pour stabilité encodeur")
+                    await asyncio.sleep(1.2)
                     continue
 
             active_stream = self._stream
@@ -1741,7 +1784,14 @@ class StudioRuntime:
                     self._osmo = client
                     self.osmo_name = dev.name or dev.address
                     self.osmo_connected = True
-                    self.arbiter.log("OSMO", f"Connecté en BLE à {self.osmo_name}")
+                    self.watchdog.reset()
+                    # Immediately send a gentle DUML Resume (0x0D 0x2AB5) on connect to exit idle standby!
+                    try:
+                        await client.send_resume_motors()
+                        self.watchdog.note_ble_tx(is_resume=True)
+                    except Exception:
+                        pass
+                    self.arbiter.log("OSMO", f"Connecté en BLE à {self.osmo_name} (anti-veille 0x0D actif)")
                 except Exception as exc:
                     self.osmo_connected = False
                     self._osmo = None
@@ -1750,7 +1800,25 @@ class StudioRuntime:
                     continue
 
             try:
-                if self.arbiter.live_motors and time.monotonic() >= self._hw_busy_until:
+                # Silent CoreBluetooth freeze watchdog: if zero IMU packets arrive for > 4.5s, reconnect cleanly!
+                now_loop = time.monotonic()
+                if (
+                    self._osmo is not None
+                    and self._osmo.connected_at > 0
+                    and (now_loop - self._osmo.connected_at) > 3.5
+                    and (now_loop - self._osmo.last_rx_at) > 4.5
+                ):
+                    self.arbiter.log("WARN", "Flux IMU BLE figé (> 4.5s sans paquet) — reconnexion BLE automatique…")
+                    try:
+                        await self._osmo.disconnect()
+                    except Exception:
+                        pass
+                    self.osmo_connected = False
+                    self._osmo = None
+                    await asyncio.sleep(0.6)
+                    continue
+
+                if self.arbiter.live_motors and now_loop >= self._hw_busy_until:
                     interp = self.arbiter.latest
                     cmd_yaw = interp.cmd_yaw_dps
                     cmd_pitch = interp.cmd_pitch_dps
@@ -1767,9 +1835,27 @@ class StudioRuntime:
                     motor_yaw = max(-96.0, min(96.0, motor_yaw))
                     motor_pitch = max(-96.0, min(96.0, motor_pitch))
 
+                    att = self._osmo.last_attitude
+                    wd = self.watchdog.evaluate(
+                        motor_yaw=motor_yaw,
+                        motor_pitch=motor_pitch,
+                        pitch_deg=att.pitch_deg if att else None,
+                        roll_deg=att.roll_deg if att else None,
+                        desk_mode=self.arbiter.desk_mode,
+                        now=now_loop,
+                    )
+                    if wd.alert:
+                        self.arbiter.log("WARN" if wd.motor_state != "active" else "OSMO", wd.alert)
+                    if wd.action == "wake_motors":
+                        await self.wake_motors(manual=False)
+                        await asyncio.sleep(0.05)
+                        continue
+
+                    motor_yaw = wd.motor_yaw
+                    motor_pitch = wd.motor_pitch
+
                     if self.arbiter.control_mode == "speed":
                         is_zero = abs(motor_yaw) < 0.2 and abs(motor_pitch) < 0.2 and abs(interp.cmd_roll_dps) < 0.2
-                        now_ble = time.monotonic()
                         if not is_zero:
                             self._idle_zero_sent = 0
                             await self._osmo.send_speed(
@@ -1778,15 +1864,22 @@ class StudioRuntime:
                                 roll_dps=interp.cmd_roll_dps,
                                 duration_ds=2,
                             )
-                            self._last_ble_tx_t = now_ble
+                            self.watchdog.note_ble_tx(now_loop)
+                            self._last_ble_tx_t = now_loop
                             self._last_motor_cmd = (motor_yaw, motor_pitch)
                             self.osmo_tx_packets += 1
                             self.osmo_last_tx = f"speed mY={motor_yaw:+.1f} mP={motor_pitch:+.1f}"
-                        elif self._idle_zero_sent < 2 or (now_ble - self._last_ble_tx_t) >= 8.0:
-                            # Send 2 clean brake packets + gentle 1x/8s anti-sleep BLE keepalive (keeps OM3 awake with zero heat!)
+                        elif wd.action == "keepalive_resume":
+                            await self._osmo.send_resume_motors()
+                            self.watchdog.note_ble_tx(now_loop, is_resume=True)
+                            self._last_ble_tx_t = now_loop
+                            self.osmo_tx_packets += 1
+                            self.osmo_last_tx = "anti-sleep 0x0D"
+                        elif self._idle_zero_sent < 2 or wd.action == "keepalive_speed":
                             self._idle_zero_sent += 1
                             await self._osmo.send_speed(0.0, 0.0, 0.0, duration_ds=2)
-                            self._last_ble_tx_t = now_ble
+                            self.watchdog.note_ble_tx(now_loop)
+                            self._last_ble_tx_t = now_loop
                             self._last_motor_cmd = (0.0, 0.0)
                             self.osmo_tx_packets += 1
                             self.osmo_last_tx = "speed STOP" if self._idle_zero_sent <= 2 else "ble keepalive"
@@ -1909,6 +2002,7 @@ class StudioRuntime:
             "osmo": {
                 "connected": self.osmo_connected,
                 "name": self.osmo_name,
+                "motor_state": self.watchdog.motor_state,
                 "packets": self.osmo_packets,
                 "tx_packets": self.osmo_tx_packets,
                 "last_tx": self.osmo_last_tx,
