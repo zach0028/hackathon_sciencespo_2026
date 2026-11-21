@@ -8,51 +8,60 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="manifest" href="/static/face-manifest.json" />
-  <title>Osmo · Pixel OLED Companion</title>
+  <title>Osmo · CAD Companion OLED</title>
   <link rel="stylesheet" href="/static/face.css" />
 </head>
 <body data-mode="dialogue">
-  <!-- Ambient edge halo mirroring the rear 8-LED HiLight ring -->
+  <!-- Subtle architectural edge glow mirroring rear 8-LED HiLight ring -->
   <div id="halo" class="halo"></div>
 
-  <!-- 120Hz OLED Canvas for alive eyes, voice waveform & subtle focus breathing -->
+  <!-- 120Hz 3D Wireframe Superellipsoid Head + Hatched Node Eyes Canvas -->
   <canvas id="face-canvas"></canvas>
 
-  <!-- Minimal top status strip (disappears in Focus mode) -->
+  <!-- Ultra-clean monospace corner telemetry (marked.dev / CAD drafting aesthetic) -->
   <header id="hud-top" class="hud-top">
     <div class="hud-left">
       <span id="conn-dot" class="conn-dot"></span>
-      <span id="state-pill" class="state-pill">PRÊT</span>
+      <span id="state-pill" class="mono-tag">IDLE</span>
     </div>
     <div class="hud-right">
-      <span id="opt-pill" class="opt-pill hidden">1.0× · 2.7K</span>
-      <span id="clock-mini" class="clock-mini">12:00</span>
+      <span id="pose-telemetry" class="mono-dim">Y +00.0° · P +00.0°</span>
+      <span id="opt-pill" class="mono-tag hidden">1.0× · 2.7K</span>
+      <span id="clock-mini" class="mono-dim">12:00</span>
     </div>
   </header>
 
-  <!-- Mode A: Deep Work / Focus (quiet, non-disturbing ambient presence) -->
+  <!-- Mode A: Quiet Focus / Deep Work (minimal hairline clock beneath dimmed wireframe) -->
   <section id="focus-layer" class="focus-layer hidden" aria-hidden="true">
     <div id="focus-clock" class="focus-clock">12:00</div>
-    <div id="focus-sub" class="focus-sub">MODE DISCRET · GLISSEZ VERS LE HAUT POUR RÉVEILLER</div>
+    <div class="focus-sub">QUIET MODE · SWIPE UP TO WAKE</div>
   </section>
 
-  <!-- Mode B: Dialogue live caption (fades cleanly after speech) -->
+  <!-- Mode B: Dialogue live caption (monochrome editorial hairline bar) -->
   <div id="caption-wrap" class="caption-wrap hidden">
+    <span class="caption-prefix">OSMO //</span>
     <p id="caption-text" class="caption-text"></p>
   </div>
 
-  <!-- Mode C: Desk Reading Contextual HUD (legible at 60-80 cm when angled on notebook) -->
+  <!-- Mode C: Desk Reading Blueprint Card (editorial marked.dev drafting grid) -->
   <section id="desk-layer" class="desk-layer hidden" aria-hidden="true">
     <div class="desk-card">
+      <span class="corner tl">+</span>
+      <span class="corner tr">+</span>
+      <span class="corner bl">+</span>
+      <span class="corner br">+</span>
+
       <div class="desk-header">
         <div class="desk-badge">
           <span id="desk-led-dot" class="desk-led-dot"></span>
-          <span id="desk-status-label">LECTURE FEUILLE</span>
+          <span id="desk-status-label">DESK // READING</span>
         </div>
         <div id="desk-optics" class="desk-optics">1.0× · 2688×1512</div>
       </div>
 
-      <div id="desk-body" class="desk-body">
+      <div class="desk-divider"></div>
+
+      <div class="desk-body">
         <p id="desk-reply" class="desk-reply">En attente d'analyse de la feuille…</p>
       </div>
 
@@ -60,28 +69,31 @@
         <div id="desk-scan-bar" class="desk-scan-bar hidden">
           <div class="desk-scan-fill"></div>
         </div>
-        <div class="desk-hint">Double-tap : retour visage</div>
+        <div class="desk-meta-row">
+          <span id="desk-hilight-label">HILIGHT // RING-LIGHT</span>
+          <span>DOUBLE-TAP : FACE</span>
+        </div>
       </div>
     </div>
   </section>
 
-  <!-- Touch gesture feedback toast -->
+  <!-- Micro toast -->
   <div id="toast" class="toast hidden"></div>
 
-  <!-- Discreet demo / test drawer (visible on ?demo=1 or long-press bottom-right corner) -->
-  <button id="btn-demo-toggle" class="btn-demo-toggle" title="Aperçu des états">●</button>
+  <!-- Discreet preview/demo dock (?demo=1 or bottom-right micro dot) -->
+  <button id="btn-demo-toggle" class="btn-demo-toggle" title="États & aperçu">+</button>
   <aside id="demo-dock" class="demo-dock hidden">
-    <button data-demo="live">Live WS</button>
-    <button data-demo="focus">Focus</button>
-    <button data-demo="listen">Écoute</button>
-    <button data-demo="think">Réflexion</button>
-    <button data-demo="speak">Parole</button>
-    <button data-demo="yes">Oui ^^</button>
-    <button data-demo="no">Non</button>
-    <button data-demo="curious">Curieux</button>
-    <button data-demo="search">Scan</button>
-    <button data-demo="desk">Feuille</button>
-    <button id="btn-fs">Plein écran</button>
+    <button data-demo="live">LIVE</button>
+    <button data-demo="focus">FOCUS</button>
+    <button data-demo="listen">LISTEN</button>
+    <button data-demo="think">THINK</button>
+    <button data-demo="speak">SPEAK</button>
+    <button data-demo="yes">YES</button>
+    <button data-demo="no">NO</button>
+    <button data-demo="curious">CURIOUS</button>
+    <button data-demo="search">SCAN</button>
+    <button data-demo="desk">DESK</button>
+    <button id="btn-fs">FULL</button>
   </aside>
 
   <script src="/static/face.js"></script>

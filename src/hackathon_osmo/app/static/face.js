@@ -1,4 +1,4 @@
-/* Osmo Adaptive Desk Companion — 120Hz OLED Canvas + HiLight Mirror + Touch Gestures */
+/* Osmo 3D Wireframe Superellipsoid Head · Hatched Vector-Node Eyes · marked.dev / CAD Craft */
 
 (() => {
   const canvas = document.getElementById("face-canvas");
@@ -6,6 +6,7 @@
 
   const elConn = document.getElementById("conn-dot");
   const elStatePill = document.getElementById("state-pill");
+  const elPoseTelemetry = document.getElementById("pose-telemetry");
   const elOptPill = document.getElementById("opt-pill");
   const elClockMini = document.getElementById("clock-mini");
   const elFocusLayer = document.getElementById("focus-layer");
@@ -18,12 +19,13 @@
   const elDeskOptics = document.getElementById("desk-optics");
   const elDeskReply = document.getElementById("desk-reply");
   const elDeskScanBar = document.getElementById("desk-scan-bar");
+  const elDeskHiLight = document.getElementById("desk-hilight-label");
   const elToast = document.getElementById("toast");
   const elDemoDock = document.getElementById("demo-dock");
   const btnDemoToggle = document.getElementById("btn-demo-toggle");
   const btnFs = document.getElementById("btn-fs");
 
-  // --- Wake Lock (keeps Pixel OLED awake during desk sessions) ---
+  // --- Screen Wake Lock + Haptics ---
   let wakeLock = null;
   async function requestWakeLock() {
     try {
@@ -48,36 +50,43 @@
     elToast.textContent = msg;
     elToast.classList.remove("hidden");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => elToast.classList.add("hidden"), 1800);
+    toastTimer = setTimeout(() => elToast.classList.add("hidden"), 1700);
   }
 
-  // --- Color palette synchronized with rear 8-LED HiLight ring ---
-  const MOOD_COLORS = {
-    idle: [220, 236, 255],
-    listen: [56, 189, 248],     // cyan
-    think: [251, 191, 36],      // amber
-    speak: [125, 211, 252],     // warm sky
-    yes: [52, 211, 153],        // emerald
-    no: [248, 113, 113],        // coral red
-    curious: [251, 191, 36],    // amber
-    search: [34, 211, 238],     // bright cyan
-    desk: [253, 224, 150],      // warm reading white
-    desk_locked: [52, 211, 153] // sheet locked emerald
+  // --- Surgical monochrome-first accent colors (mirrors rear HiLight 8-LED ring on bottom edge rim) ---
+  const RIM_COLORS = {
+    idle: [96, 165, 250],        // crisp blueprint steel blue (matches reference bottom rim!)
+    listen: [96, 165, 250],      // blueprint blue
+    think: [245, 158, 11],       // technical amber
+    speak: [125, 211, 252],      // ice cyan
+    yes: [52, 211, 153],         // emerald
+    no: [248, 113, 113],         // coral
+    curious: [251, 191, 36],     // warm amber
+    search: [56, 189, 248],      // radar cyan
+    desk: [251, 191, 36],        // warm amber scan
+    desk_locked: [52, 211, 153]  // locked emerald
   };
 
   // --- Live state mirrored from StudioRuntime /ws ---
   let ws = null;
-  let wsConnected = false;
   let demoMode = new URLSearchParams(location.search).get("demo");
   let manualDnd = false;
   let lastActivityAt = performance.now();
   let lastReplyText = "";
   let lastReplyAt = 0;
 
+  // Interactive pointer/hover gaze (marked.dev micro-interaction!)
+  const pointer = {
+    active: false,
+    x: 0, // -1..1
+    y: 0, // -1..1
+    lastMoveAt: 0
+  };
+
   const live = {
     mode: "dialogue", // "focus" | "dialogue" | "desk"
-    mood: "idle",     // "idle" | "listen" | "think" | "speak" | "yes" | "no" | "curious" | "search" | "desk"
-    gazeX: 0,         // -1..1 target eye gaze
+    mood: "listen",
+    gazeX: 0,
     gazeY: 0,
     speaking: false,
     busy: false,
@@ -88,36 +97,55 @@
     width: 1280,
     height: 720,
     hilightColor: null,
+    hilightEffect: "off",
     reply: "",
-    stateLabel: "PRÊT"
+    stateLabel: "READY"
   };
 
-  // --- Spring-physics eye state (smooth 120Hz motion) ---
+  // --- 2nd-order Spring-Damper Physics for ultra-organic 3D head motion ---
+  function makeSpring(val = 0, stiffness = 95, damping = 13) {
+    return { v: val, vel: 0, k: stiffness, d: damping };
+  }
+  function stepSpring(s, target, dt) {
+    const force = (target - s.v) * s.k - s.vel * s.d;
+    s.vel += force * dt;
+    s.v += s.vel * dt;
+    return s.v;
+  }
+
+  const sp = {
+    yaw: makeSpring(-0.22, 72, 11.5),    // rad (left/right 3D head turn)
+    pitch: makeSpring(0.10, 72, 11.5),   // rad (up/down 3D head tilt)
+    roll: makeSpring(-0.04, 65, 11.0),   // rad (expressive head cock)
+    scale: makeSpring(1.0, 68, 12.0),    // head size (shrinks smoothly in Desk mode!)
+    centerX: makeSpring(0.5, 62, 12.0),  // normalized screen X (moves left in Desk mode!)
+    centerY: makeSpring(0.5, 62, 12.0),
+    eyeOpen: makeSpring(1.0, 140, 16.0),
+    smile: makeSpring(0.0, 95, 14.0),
+    frown: makeSpring(0.0, 95, 14.0),
+    asym: makeSpring(0.0, 90, 13.0),
+    wave: makeSpring(0.0, 110, 15.0)
+  };
+
   const anim = {
-    gx: 0, gy: 0,
-    openness: 1.0,
-    smile: 0.0,
-    frown: 0.0,
-    asymmetry: 0.0,
-    eyeScale: 1.0,
-    r: 220, g: 236, b: 255,
-    haloAlpha: 0.14,
-    blinkTimer: 2.5,
-    blinkPhase: 0, // 0 = open, >0 = blinking
-    waveAmp: 0
+    r: 96, g: 165, b: 250,
+    haloAlpha: 0.08,
+    wireAlpha: 0.72,
+    blinkTimer: 2.6,
+    blinkPhase: 0,
+    gestureStart: 0
   };
 
-  // --- Clock updater ---
+  // --- Clock ---
   function updateClock() {
-    const now = new Date();
-    const txt = now.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+    const txt = new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
     elClockMini.textContent = txt;
     elFocusClock.textContent = txt;
   }
   updateClock();
   setInterval(updateClock, 5000);
 
-  // --- Apply backend StudioRuntime snapshot -> Adaptive Mode ---
+  // --- Apply StudioRuntime snapshot ---
   function applySnapshot(s) {
     if (demoMode) return;
     const cam = s.camera || {};
@@ -133,22 +161,21 @@
     const liveOn = Boolean(voice.live_connected);
     const searching = vis.state === "SEARCHING";
 
-    // Detect fresh assistant reply
     const topTurn = Array.isArray(voice.transcript) && voice.transcript.length > 0 ? voice.transcript[0] : null;
     const reply = topTurn && topTurn.reply ? String(topTurn.reply).trim() : "";
     if (reply && reply !== lastReplyText) {
       lastReplyText = reply;
       lastReplyAt = performance.now();
       lastActivityAt = performance.now();
-      if (isDesk) haptic([14, 30, 14]);
+      if (isDesk) haptic([12, 28, 12]);
     }
 
     if (speaking || busy || activeGesture || searching || isDesk || liveOn) {
       lastActivityAt = performance.now();
     }
 
-    // Track HiLight rear LED color when available
     live.hilightColor = Array.isArray(hi.color) && hi.color.length === 3 ? hi.color : null;
+    live.hilightEffect = String(hi.effect || "off");
     live.speaking = speaking;
     live.busy = busy;
     live.faceDetected = Boolean(vis.face_detected);
@@ -159,58 +186,55 @@
     live.height = Number(cam.height || 720);
     live.reply = reply;
 
-    // Eye gaze follows Zach's face (cx, cy) or active search sweep
     if (searching) {
-      const sweepDir = Math.sign(vis.cmd_yaw_dps || 0) || Math.sin(performance.now() * 0.004);
-      live.gazeX = sweepDir * 0.85;
-      live.gazeY = -0.05;
-    } else if (busy) {
-      live.gazeX = 0.35;
-      live.gazeY = -0.35;
+      const dir = Math.sign(vis.cmd_yaw_dps || 0) || Math.sin(performance.now() * 0.003);
+      live.gazeX = dir * 0.9;
+      live.gazeY = 0;
     } else if (vis.face_detected) {
-      live.gazeX = Math.max(-0.9, Math.min(0.9, Number(vis.cx || 0) * 1.15));
-      live.gazeY = Math.max(-0.7, Math.min(0.7, Number(vis.cy || 0) * 1.1));
+      live.gazeX = Math.max(-1, Math.min(1, Number(vis.cx || 0) * 1.15));
+      live.gazeY = Math.max(-1, Math.min(1, Number(vis.cy || 0) * 1.15));
     } else {
       live.gazeX = 0;
       live.gazeY = 0;
     }
 
-    // Choose adaptive display mode: Desk HUD > Focus (DND or idle > 25s) > Dialogue Face
     const idleForMs = performance.now() - lastActivityAt;
     if (isDesk) {
       live.mode = "desk";
       live.mood = sheetFound ? "desk_locked" : "desk";
-      live.stateLabel = busy ? "ANALYSE FEUILLE" : sheetFound ? "FEUILLE VERROUILLÉE" : "MODE BUREAU";
+      live.stateLabel = busy ? "ANALYZING" : sheetFound ? "SHEET LOCKED" : "DESK MODE";
     } else if (manualDnd || (!liveOn && !speaking && !busy && !activeGesture && !searching && idleForMs > 25000)) {
       live.mode = "focus";
       live.mood = "idle";
-      live.stateLabel = "MODE DISCRET";
+      live.stateLabel = "QUIET";
     } else {
       live.mode = "dialogue";
       if (activeGesture === "nod_yes") {
+        if (live.mood !== "yes") anim.gestureStart = performance.now();
         live.mood = "yes";
-        live.stateLabel = "OUI";
+        live.stateLabel = "YES";
       } else if (activeGesture === "shake_no") {
+        if (live.mood !== "no") anim.gestureStart = performance.now();
         live.mood = "no";
-        live.stateLabel = "NON";
+        live.stateLabel = "NO";
       } else if (activeGesture === "curious_tilt") {
         live.mood = "curious";
-        live.stateLabel = "CURIEUX";
+        live.stateLabel = "CURIOUS";
       } else if (searching) {
         live.mood = "search";
-        live.stateLabel = "RECHERCHE VISAGE";
+        live.stateLabel = "SCANNING";
       } else if (busy) {
         live.mood = "think";
-        live.stateLabel = "RÉFLEXION…";
+        live.stateLabel = "THINKING";
       } else if (speaking) {
         live.mood = "speak";
-        live.stateLabel = "OSMO PARLE";
+        live.stateLabel = "SPEAKING";
       } else if (liveOn) {
         live.mood = "listen";
-        live.stateLabel = vis.face_detected ? "À L'ÉCOUTE" : "EN ATTENTE";
+        live.stateLabel = vis.face_detected ? "LISTENING" : "STANDBY";
       } else {
         live.mood = "idle";
-        live.stateLabel = vis.face_detected ? "PRÉSENT" : "PRÊT";
+        live.stateLabel = vis.face_detected ? "TRACKING" : "READY";
       }
     }
 
@@ -221,7 +245,6 @@
     document.body.dataset.mode = live.mode;
     elStatePill.textContent = live.stateLabel;
 
-    // Optics pill
     if (live.deskMode) {
       const resTag = live.width >= 3800 ? "4K" : live.width >= 2500 ? "2.7K" : `${live.width}p`;
       elOptPill.textContent = `${live.zoom.toFixed(live.zoom % 1 ? 2 : 1)}× · ${resTag}`;
@@ -230,66 +253,63 @@
       elOptPill.classList.add("hidden");
     }
 
-    // Focus layer
     elFocusLayer.classList.toggle("hidden", live.mode !== "focus");
 
-    // Desk contextual HUD
     const showDesk = live.mode === "desk";
     elDeskLayer.classList.toggle("hidden", !showDesk);
     if (showDesk) {
       elDeskLed.classList.toggle("locked", live.sheetFound && !live.busy);
       elDeskStatus.textContent = live.busy
-        ? "ANALYSE DE LA FEUILLE…"
+        ? "DESK // ANALYZING SHEET"
         : live.sheetFound
-          ? "FEUILLE VERROUILLÉE"
-          : "CAMÉRA BUREAU ACTIVE";
+          ? "DESK // SHEET LOCKED"
+          : "DESK // CAMERA ACTIVE";
       elDeskOptics.textContent = `${live.zoom.toFixed(live.zoom % 1 ? 2 : 1)}× · ${live.width}×${live.height}`;
       elDeskReply.textContent = live.reply || "Pose ta feuille devant la caméra et pose-moi ta question.";
       elDeskScanBar.classList.toggle("hidden", !live.busy);
+      elDeskHiLight.textContent = `HILIGHT // ${live.hilightEffect.toUpperCase()}`;
     }
 
-    // Live caption in Dialogue mode (show while speaking or for 6s after new reply)
     const showCaption =
       live.mode === "dialogue" &&
       Boolean(live.reply) &&
       (live.speaking || performance.now() - lastReplyAt < 6500);
     elCaptionWrap.classList.toggle("hidden", !showCaption);
-    if (showCaption) {
-      elCaptionText.textContent = live.reply;
-    }
+    if (showCaption) elCaptionText.textContent = live.reply;
   }
 
-  // --- WebSocket bridge to StudioRuntime ---
+  // --- WebSocket connection ---
   function sendWs(payload) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(payload));
-    }
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
   }
-
   function connectWs() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     ws = new WebSocket(`${proto}//${location.host}/ws`);
-    ws.onopen = () => {
-      wsConnected = true;
-      elConn.classList.add("ok");
-    };
+    ws.onopen = () => elConn.classList.add("ok");
     ws.onmessage = (ev) => {
-      try {
-        applySnapshot(JSON.parse(ev.data));
-      } catch (_) {}
+      try { applySnapshot(JSON.parse(ev.data)); } catch (_) {}
     };
     ws.onclose = () => {
-      wsConnected = false;
       elConn.classList.remove("ok");
       setTimeout(connectWs, 1500);
     };
   }
   connectWs();
 
-  // --- Touch gestures on Pixel OLED surface ---
-  let touchStartY = 0;
-  let touchStartT = 0;
-  let lastTapT = 0;
+  // --- Interactive Pointer Hover + Touch Gestures ---
+  let touchStartY = 0, touchStartT = 0, lastTapT = 0;
+
+  document.addEventListener("pointermove", (e) => {
+    if (e.target.closest("#demo-dock")) return;
+    pointer.active = true;
+    pointer.x = ((e.clientX / Math.max(1, window.innerWidth)) - 0.5) * 2;
+    pointer.y = ((e.clientY / Math.max(1, window.innerHeight)) - 0.5) * 2;
+    pointer.lastMoveAt = performance.now();
+  });
+
+  document.addEventListener("pointerleave", () => {
+    pointer.active = false;
+  });
 
   document.addEventListener("pointerdown", (e) => {
     if (e.target.closest("#demo-dock") || e.target.closest("#btn-demo-toggle")) return;
@@ -303,20 +323,18 @@
     const dy = e.clientY - touchStartY;
     const dt = performance.now() - touchStartT;
 
-    // Swipe down -> Quiet Focus / DND mode
     if (dy > 75 && dt < 500) {
       manualDnd = true;
       live.mode = "focus";
       live.mood = "idle";
-      live.stateLabel = "MODE DISCRET";
+      live.stateLabel = "QUIET";
       sendWs({ action: "hilight", reaction: "off" });
-      haptic(20);
-      showToast("Mode discret activé");
+      haptic(18);
+      showToast("QUIET MODE");
       syncDomLayers();
       return;
     }
 
-    // Swipe up -> Wake & fullscreen
     if (dy < -75 && dt < 500) {
       manualDnd = false;
       lastActivityAt = performance.now();
@@ -324,36 +342,35 @@
       if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
         document.documentElement.requestFullscreen().catch(() => {});
       }
-      haptic([12, 25, 12]);
-      showToast("Osmo réveillé");
+      haptic([12, 24, 12]);
+      showToast("AWAKE");
       syncDomLayers();
       return;
     }
 
-    // Tap / Double-tap
-    if (Math.abs(dy) < 24 && dt < 320) {
+    if (Math.abs(dy) < 22 && dt < 320) {
       const now = performance.now();
       if (now - lastTapT < 340) {
-        // Double tap -> Toggle Face <-> Desk Reading!
         lastTapT = 0;
         manualDnd = false;
         lastActivityAt = now;
         if (live.deskMode) {
           sendWs({ action: "return_face_mode" });
           haptic([16, 40, 22]);
-          showToast("Retour vers ton visage");
+          showToast("MODE // FACE");
         } else {
           sendWs({ action: "enter_desk_mode" });
           haptic([16, 40, 22]);
-          showToast("Passage en lecture feuille");
+          showToast("MODE // DESK");
         }
       } else {
         lastTapT = now;
         manualDnd = false;
         lastActivityAt = now;
-        // Playful micro-blink + subtle haptic acknowledgement
-        anim.blinkPhase = 0.01;
-        haptic(12);
+        anim.blinkPhase = 0.001;
+        // Playful spring impulse on tap
+        sp.pitch.vel += 1.4;
+        haptic(10);
         if (live.mode === "focus") {
           live.mode = "dialogue";
           syncDomLayers();
@@ -362,61 +379,58 @@
     }
   });
 
-  // --- Demo / Preview mode (accessible via ?demo=1 or bottom-right micro dot) ---
+  // --- Demo / Preview presets ---
   function applyDemo(preset) {
     if (preset === "live") {
       demoMode = null;
       manualDnd = false;
-      showToast("Mode Live connecté");
+      showToast("WS // LIVE");
       return;
     }
     demoMode = preset;
     manualDnd = false;
     lastActivityAt = performance.now();
+    anim.gestureStart = performance.now();
     live.deskMode = preset === "desk";
     live.sheetFound = preset === "desk";
     live.speaking = preset === "speak";
     live.busy = preset === "think";
-    live.zoom = preset === "desk" ? 1.0 : 1.0;
+    live.zoom = 1.0;
     live.width = preset === "desk" ? 2688 : 1280;
     live.height = preset === "desk" ? 1512 : 720;
     live.hilightColor = null;
+    live.hilightEffect = preset === "desk" ? "sheet_ringlight" : preset;
 
     if (preset === "focus") {
       live.mode = "focus";
       live.mood = "idle";
-      live.stateLabel = "MODE DISCRET";
+      live.stateLabel = "QUIET";
       live.reply = "";
     } else if (preset === "desk") {
       live.mode = "desk";
       live.mood = "desk_locked";
-      live.stateLabel = "FEUILLE VERROUILLÉE";
+      live.stateLabel = "SHEET LOCKED";
       live.reply = "« What catch your attention? » → « What catches your attention? » · « become biger » → « gets bigger ».";
     } else {
       live.mode = "dialogue";
       live.mood = preset;
       const labels = {
-        listen: "À L'ÉCOUTE",
-        think: "RÉFLEXION…",
-        speak: "OSMO PARLE",
-        yes: "OUI",
-        no: "NON",
-        curious: "CURIEUX",
-        search: "RECHERCHE VISAGE"
+        listen: "LISTENING",
+        think: "THINKING",
+        speak: "SPEAKING",
+        yes: "YES",
+        no: "NO",
+        curious: "CURIOUS",
+        search: "SCANNING"
       };
-      live.stateLabel = labels[preset] || "PRÊT";
-      live.gazeX = preset === "think" ? 0.35 : preset === "curious" ? -0.2 : 0;
-      live.gazeY = preset === "think" ? -0.35 : 0;
-      live.reply = preset === "speak" ? "Je vois bien ton schéma rouge avec Solution 1 et Solution 2." : "";
+      live.stateLabel = labels[preset] || "READY";
+      live.reply = preset === "speak" ? "Je vois ton schéma en rouge avec Solution 1 et Solution 2." : "";
       lastReplyAt = performance.now();
     }
     syncDomLayers();
   }
 
-  btnDemoToggle.addEventListener("click", () => {
-    elDemoDock.classList.toggle("hidden");
-  });
-
+  btnDemoToggle.addEventListener("click", () => elDemoDock.classList.toggle("hidden"));
   elDemoDock.querySelectorAll("button[data-demo]").forEach((btn) => {
     btn.addEventListener("click", () => {
       elDemoDock.querySelectorAll("button[data-demo]").forEach((b) => b.classList.remove("active"));
@@ -424,7 +438,6 @@
       applyDemo(btn.dataset.demo);
     });
   });
-
   btnFs.addEventListener("click", () => {
     requestWakeLock();
     if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
@@ -433,13 +446,15 @@
       document.exitFullscreen().catch(() => {});
     }
   });
-
   if (demoMode) {
     elDemoDock.classList.remove("hidden");
-    applyDemo(demoMode === "1" ? "listen" : demoMode);
+    const initPreset = demoMode === "1" ? "listen" : demoMode;
+    applyDemo(initPreset);
+    const activeBtn = elDemoDock.querySelector(`button[data-demo="${initPreset}"]`);
+    if (activeBtn) activeBtn.classList.add("active");
   }
 
-  // --- Canvas resize (Retina / Pixel 11 Pro high-DPI crispness) ---
+  // --- High-DPI Canvas Resize ---
   let W = 0, H = 0, DPR = 1;
   function resize() {
     DPR = Math.min(window.devicePixelRatio || 1, 3);
@@ -452,225 +467,477 @@
   window.addEventListener("resize", resize);
   resize();
 
-  // --- Helper: rounded pill eye ---
-  function drawRoundedRect(x, y, w, h, r) {
-    const rr = Math.min(r, w / 2, h / 2);
-    ctx.beginPath();
-    ctx.moveTo(x + rr, y);
-    ctx.arcTo(x + w, y, x + w, y + h, rr);
-    ctx.arcTo(x + w, y + h, x, y + h, rr);
-    ctx.arcTo(x, y + h, x, y, rr);
-    ctx.arcTo(x, y, x + w, y, rr);
-    ctx.closePath();
+  // =========================================================================
+  // 3D SUPERELLIPSOID (ROUNDED CUBE) MATH — Analytical Support Silhouette
+  // =========================================================================
+  const LP = 3.75; // superellipsoid power (3.75 = crisp industrial rounded cube!)
+  const CAM_DIST = 4.6;
+
+  // Build 3x3 rotation matrix R = Rz(roll) * Rx(pitch) * Ry(yaw)
+  function rotMatrix(yaw, pitch, roll) {
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    const cp = Math.cos(pitch), sp_ = Math.sin(pitch);
+    const cr = Math.cos(roll), sr = Math.sin(roll);
+    return [
+      cr * cy - sr * sp_ * sy,  -sr * cp,  cr * sy + sr * sp_ * cy,
+      sr * cy + cr * sp_ * sy,   cr * cp,  sr * sy - cr * sp_ * cy,
+      -cp * sy,                  sp_,      cp * cy
+    ];
   }
 
-  // --- 120Hz Render Loop ---
+  function mulR(R, x, y, z) {
+    return [
+      R[0] * x + R[1] * y + R[2] * z,
+      R[3] * x + R[4] * y + R[5] * z,
+      R[6] * x + R[7] * y + R[8] * z
+    ];
+  }
+
+  function mulRT(R, x, y, z) {
+    return [
+      R[0] * x + R[3] * y + R[6] * z,
+      R[1] * x + R[4] * y + R[7] * z,
+      R[2] * x + R[5] * y + R[8] * z
+    ];
+  }
+
+  // Normalize any 3D vector onto the L_p superellipsoid surface (|x|^p + |y|^p + |z|^p = 1)
+  function toSuperSurface(x, y, z) {
+    const n = Math.pow(
+      Math.pow(Math.abs(x), LP) + Math.pow(Math.abs(y), LP) + Math.pow(Math.abs(z), LP),
+      1 / LP
+    ) || 1;
+    return [x / n, y / n, z / n];
+  }
+
+  // Outward normal of L_p surface in local coordinates
+  function superNormal(x, y, z) {
+    const p1 = LP - 1;
+    const nx = Math.sign(x) * Math.pow(Math.abs(x), p1);
+    const ny = Math.sign(y) * Math.pow(Math.abs(y), p1);
+    const nz = Math.sign(z) * Math.pow(Math.abs(z), p1);
+    const len = Math.hypot(nx, ny, nz) || 1;
+    return [nx / len, ny / len, nz / len];
+  }
+
+  // Perspective projection (local -> world -> screen)
+  function projectWorld(wx, wy, wz, cx, cy, scalePx) {
+    const persp = CAM_DIST / (CAM_DIST - wz);
+    return [cx + wx * scalePx * persp, cy + wy * scalePx * persp, wz];
+  }
+
+  // Exact analytical silhouette of rotated L_p rounded cube using convex dual-norm support!
+  function computeSilhouette(R, cx, cy, scalePx, samples = 128) {
+    const pts = [];
+    const invP1 = 1 / (LP - 1);
+    for (let i = 0; i < samples; i++) {
+      const a = (i / samples) * Math.PI * 2;
+      const dx = Math.cos(a);
+      const dy = Math.sin(a);
+      // Local direction a = R^T * d
+      const [ax, ay, az] = mulRT(R, dx, dy, 0);
+      const lx = Math.sign(ax) * Math.pow(Math.abs(ax), invP1);
+      const ly = Math.sign(ay) * Math.pow(Math.abs(ay), invP1);
+      const lz = Math.sign(az) * Math.pow(Math.abs(az), invP1);
+      const [sx, sy, sz] = toSuperSurface(lx, ly, lz);
+      const [wx, wy, wz] = mulR(R, sx, sy, sz);
+      const [px, py] = projectWorld(wx, wy, wz, cx, cy, scalePx);
+      pts.push({ x: px, y: py, a, dy });
+    }
+    return pts;
+  }
+
+  // Draw dashed 3D meridian curve on the visible front hemisphere of the superellipsoid
+  function drawMeridian(R, axis, cx, cy, scalePx, strokeColor) {
+    const steps = 96;
+    ctx.save();
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 1.05;
+    ctx.setLineDash([3.2, 4.4]);
+    ctx.beginPath();
+    let drawing = false;
+
+    for (let i = 0; i <= steps; i++) {
+      const t = (i / steps) * Math.PI * 2;
+      let rawX = 0, rawY = 0, rawZ = 0;
+      if (axis === "vertical") {
+        rawX = 0; rawY = Math.sin(t); rawZ = Math.cos(t);
+      } else {
+        rawX = Math.sin(t); rawY = 0; rawZ = Math.cos(t);
+      }
+      const [sx, sy, sz] = toSuperSurface(rawX, rawY, rawZ);
+      const [nx, ny, nz] = superNormal(sx, sy, sz);
+      const [wx, wy, wz] = mulR(R, sx, sy, sz);
+      const [wnx, wny, wnz] = mulR(R, nx, ny, nz);
+      // View vector from surface point to camera (0, 0, CAM_DIST)
+      const dot = wnx * (0 - wx) + wny * (0 - wy) + wnz * (CAM_DIST - wz);
+      if (dot > 0.08) {
+        const [px, py] = projectWorld(wx, wy, wz, cx, cy, scalePx);
+        if (!drawing) {
+          ctx.moveTo(px, py);
+          drawing = true;
+        } else {
+          ctx.lineTo(px, py);
+        }
+      } else {
+        drawing = false;
+      }
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Draw one architectural CAD eye on the curved 3D front face (45° hatching + vector perimeter nodes!)
+  function drawDraftingEye(R, side, cx, cy, scalePx, eyeOpts) {
+    const { openFactor, smile, frown, scaleMod, strokeAlpha, nodeColor, hatchColor, rimRgb } = eyeOpts;
+    // Eye center in front-face local coords
+    const ex = side * 0.30;
+    const ey = 0.08 + (side === 1 ? -eyeOpts.asym * 0.04 : eyeOpts.asym * 0.025);
+    const rx = 0.145 * scaleMod;
+    const ry = Math.max(0.024, 0.255 * scaleMod * openFactor);
+
+    // Build rounded capsule perimeter points in local (u, v) plane
+    const contour2D = [];
+    const N = 20; // crisp evenly spaced CAD control-point nodes around each eye!
+    for (let i = 0; i < N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      // Superellipse capsule (power 2.8)
+      const ca = Math.cos(a), sa = Math.sin(a);
+      let u = Math.sign(ca) * Math.pow(Math.abs(ca), 0.72) * rx;
+      let v = Math.sign(sa) * Math.pow(Math.abs(sa), 0.72) * ry;
+
+      // Expressive morphs on the eye geometry itself:
+      // 1. Happy arc bend (nod_yes)
+      if (smile > 0.05) {
+        const normU = u / Math.max(0.01, rx);
+        v -= (1 - normU * normU) * 0.11 * smile;
+        if (sa > 0) v -= sa * ry * 0.45 * smile;
+      }
+      // 2. Skeptical/No slanted upper edge
+      if (frown > 0.05 && sa < 0) {
+        const slant = side === -1 ? (u / rx) : -(u / rx);
+        v += (0.06 + slant * 0.06) * frown;
+      }
+
+      // Map (ex + u, ey + v, +1.0) onto the curved front face of the 3D superellipsoid!
+      const [sx, sy, sz] = toSuperSurface(ex + u, ey + v, 1.0);
+      const [wx, wy, wz] = mulR(R, sx, sy, sz);
+      const [px, py] = projectWorld(wx, wy, wz, cx, cy, scalePx);
+      contour2D.push({ x: px, y: py });
+    }
+
+    // Bounding box of projected eye for 45° hatching
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of contour2D) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+
+    ctx.save();
+    // 1. Clip to eye silhouette + fill subtle matte dark + draw crisp 45° architectural hatching!
+    ctx.beginPath();
+    contour2D.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+    ctx.closePath();
+
+    ctx.fillStyle = "rgba(11, 13, 18, 0.92)";
+    ctx.fill();
+
+    ctx.save();
+    ctx.clip();
+    ctx.strokeStyle = hatchColor;
+    ctx.lineWidth = 1.05;
+    const step = Math.max(4.5, scalePx * 0.038);
+    const span = (maxX - minX) + (maxY - minY);
+    ctx.beginPath();
+    for (let d = -span; d <= span; d += step) {
+      ctx.moveTo(minX + d, maxY + 4);
+      ctx.lineTo(minX + d + (maxY - minY) + 8, minY - 4);
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    // 2. Crisp perimeter wireframe connecting the control vertices
+    ctx.strokeStyle = `rgba(210, 222, 238, ${(0.52 * strokeAlpha).toFixed(3)})`;
+    ctx.lineWidth = 1.05;
+    ctx.stroke();
+
+    // 3. Tiny hollow circular CAD vector nodes (○) along the entire eye contour!
+    const nodeR = Math.max(1.6, Math.min(2.8, scalePx * 0.0155));
+    for (let i = 0; i < contour2D.length; i++) {
+      const p = contour2D[i];
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, nodeR, 0, Math.PI * 2);
+      ctx.fillStyle = "#07080b";
+      ctx.fill();
+      ctx.strokeStyle = i % 5 === 0 && live.busy ? `rgba(${rimRgb}, 0.9)` : nodeColor;
+      ctx.lineWidth = 1.05;
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  // =========================================================================
+  // 120Hz RENDER LOOP
+  // =========================================================================
   let lastT = performance.now();
+
   function frame(now) {
     const dt = Math.min(0.05, (now - lastT) / 1000);
     lastT = now;
     const t = now * 0.001;
 
-    // 1. Target mood parameters
-    const targetColor =
-      (live.hilightColor && (live.hilightColor[0] + live.hilightColor[1] + live.hilightColor[2] > 25))
+    // 1. Target HiLight-synced accent rim color
+    const targetRgb =
+      live.hilightColor && (live.hilightColor[0] + live.hilightColor[1] + live.hilightColor[2] > 25)
         ? live.hilightColor
-        : (MOOD_COLORS[live.mood] || MOOD_COLORS.idle);
+        : (RIM_COLORS[live.mood] || RIM_COLORS.idle);
+    const ck = Math.min(1, dt * 7.5);
+    anim.r += (targetRgb[0] - anim.r) * ck;
+    anim.g += (targetRgb[1] - anim.g) * ck;
+    anim.b += (targetRgb[2] - anim.b) * ck;
 
-    const k = Math.min(1, dt * 8.5);
-    anim.r += (targetColor[0] - anim.r) * k;
-    anim.g += (targetColor[1] - anim.g) * k;
-    anim.b += (targetColor[2] - anim.b) * k;
+    const targetHalo = live.mode === "focus" ? 0.02 : live.speaking || live.busy ? 0.14 : 0.08;
+    anim.haloAlpha += (targetHalo - anim.haloAlpha) * ck;
+    const targetWire = live.mode === "focus" ? 0.24 : 0.78;
+    anim.wireAlpha += (targetWire - anim.wireAlpha) * ck;
 
-    const targetHalo = live.mode === "focus" ? 0.04 : live.speaking ? 0.24 : live.busy ? 0.22 : 0.14;
-    anim.haloAlpha += (targetHalo - anim.haloAlpha) * k;
+    const rimRgb = `${Math.round(anim.r)}, ${Math.round(anim.g)}, ${Math.round(anim.b)}`;
+    const rs = document.documentElement.style;
+    rs.setProperty("--rim-r", Math.round(anim.r));
+    rs.setProperty("--rim-g", Math.round(anim.g));
+    rs.setProperty("--rim-b", Math.round(anim.b));
+    rs.setProperty("--halo-alpha", anim.haloAlpha.toFixed(3));
 
-    // Update CSS edge halo mirroring HiLight
-    const rootStyle = document.documentElement.style;
-    rootStyle.setProperty("--halo-r", Math.round(anim.r));
-    rootStyle.setProperty("--halo-g", Math.round(anim.g));
-    rootStyle.setProperty("--halo-b", Math.round(anim.b));
-    rootStyle.setProperty("--halo-alpha", anim.haloAlpha.toFixed(3));
+    // 2. Compute target 3D head orientation (yaw, pitch, roll) + layout position
+    const pointerFresh = pointer.active && (now - pointer.lastMoveAt < 5000);
+    const inputX = pointerFresh ? pointer.x : live.gazeX;
+    const inputY = pointerFresh ? pointer.y : live.gazeY;
 
-    // Smooth gaze
-    const targetGx = live.mood === "search" ? Math.sin(t * 3.1) * 0.85 : live.gazeX;
-    const targetGy = live.gazeY + Math.sin(t * 1.1) * 0.025;
-    anim.gx += (targetGx - anim.gx) * Math.min(1, dt * 10);
-    anim.gy += (targetGy - anim.gy) * Math.min(1, dt * 10);
+    let tYaw = -0.18 + inputX * 0.36 + Math.sin(t * 0.65) * 0.03;
+    let tPitch = 0.08 + inputY * 0.26 + Math.cos(t * 0.52) * 0.02;
+    let tRoll = -inputX * 0.05;
+    let tScale = 1.0;
+    let tCx = 0.5;
+    let tCy = 0.49;
 
-    // Expressive morph targets
-    const targetSmile = live.mood === "yes" ? 1.0 : live.mood === "speak" ? 0.22 : 0.0;
-    const targetFrown = live.mood === "no" ? 1.0 : 0.0;
-    const targetAsym = live.mood === "curious" ? 1.0 : 0.0;
-    const targetWave = live.speaking ? 1.0 : live.mood === "listen" ? 0.16 : 0.0;
-    anim.smile += (targetSmile - anim.smile) * k;
-    anim.frown += (targetFrown - anim.frown) * k;
-    anim.asymmetry += (targetAsym - anim.asymmetry) * k;
-    anim.waveAmp += (targetWave - anim.waveAmp) * Math.min(1, dt * 11);
+    const gElapsed = (now - anim.gestureStart) * 0.001;
 
-    // Autonomous natural blinking
-    anim.blinkTimer -= dt;
-    if (anim.blinkTimer <= 0 && anim.blinkPhase === 0) {
-      anim.blinkPhase = 0.001;
-      anim.blinkTimer = 2.8 + Math.random() * 3.4;
+    if (live.mode === "focus") {
+      tYaw = -0.16 + Math.sin(t * 0.25) * 0.04;
+      tPitch = 0.14;
+      tRoll = 0.0;
+      tScale = 0.78;
+      tCy = 0.44;
+    } else if (live.mode === "desk") {
+      // Shrink cleanly to left side & look down toward the paper!
+      const narrow = W < 680;
+      tYaw = 0.28 + Math.sin(t * 0.8) * 0.04;
+      tPitch = 0.36;
+      tRoll = -0.05;
+      tScale = narrow ? 0.001 : 0.46;
+      tCx = narrow ? 0.15 : 0.16;
+      tCy = 0.52;
+    } else {
+      if (live.mood === "think") {
+        tYaw = 0.28 + Math.sin(t * 1.4) * 0.05;
+        tPitch = -0.22 + Math.cos(t * 1.1) * 0.04;
+        tRoll = 0.08;
+      } else if (live.mood === "yes") {
+        tPitch = 0.06 + Math.sin(gElapsed * 9.5) * 0.24 * Math.exp(-gElapsed * 0.35);
+      } else if (live.mood === "no") {
+        tYaw = Math.sin(gElapsed * 11.0) * 0.34 * Math.exp(-gElapsed * 0.35);
+      } else if (live.mood === "curious") {
+        tYaw = -0.22;
+        tPitch = -0.06;
+        tRoll = 0.20;
+      } else if (live.mood === "search") {
+        tYaw = Math.sin(t * 2.2) * 0.56;
+        tPitch = 0.04 + Math.sin(t * 4.4) * 0.05;
+      } else if (live.mood === "speak") {
+        tPitch += Math.sin(t * 4.8) * 0.035;
+        tRoll += Math.sin(t * 2.4) * 0.025;
+      }
     }
-    let blinkFactor = 1.0;
+
+    const yaw = stepSpring(sp.yaw, tYaw, dt);
+    const pitch = stepSpring(sp.pitch, tPitch, dt);
+    const roll = stepSpring(sp.roll, tRoll, dt);
+    const scale = stepSpring(sp.scale, tScale, dt);
+    const cxNorm = stepSpring(sp.centerX, tCx, dt);
+    const cyNorm = stepSpring(sp.centerY, tCy, dt);
+
+    // Update live monospace angle readout in top-right HUD
+    const yDeg = (yaw * 180 / Math.PI).toFixed(1).padStart(5, " ");
+    const pDeg = (pitch * 180 / Math.PI).toFixed(1).padStart(5, " ");
+    elPoseTelemetry.textContent = `Y ${yaw >= 0 ? "+" : ""}${yDeg.trim()}° · P ${pitch >= 0 ? "+" : ""}${pDeg.trim()}°`;
+
+    // Autonomous blinking
+    anim.blinkTimer -= dt;
+    if (anim.blinkTimer <= 0 && anim.blinkPhase === 0 && live.mode !== "focus") {
+      anim.blinkPhase = 0.001;
+      anim.blinkTimer = 3.0 + Math.random() * 3.8;
+    }
+    let blinkMult = 1.0;
     if (anim.blinkPhase > 0) {
-      anim.blinkPhase += dt * 7.2;
+      anim.blinkPhase += dt * 7.8;
       if (anim.blinkPhase >= 1.0) {
         anim.blinkPhase = 0;
       } else {
-        blinkFactor = Math.max(0.08, Math.abs(Math.cos(anim.blinkPhase * Math.PI)));
+        blinkMult = Math.max(0.08, Math.abs(Math.cos(anim.blinkPhase * Math.PI)));
       }
     }
 
-    // Clear pure OLED black
-    ctx.fillStyle = "#000000";
+    const targetOpen = live.mode === "focus" ? 0.14 : blinkMult;
+    const eyeOpen = stepSpring(sp.eyeOpen, targetOpen, dt);
+    const smile = stepSpring(sp.smile, live.mood === "yes" ? 1.0 : live.mood === "speak" ? 0.18 : 0.0, dt);
+    const frown = stepSpring(sp.frown, live.mood === "no" ? 1.0 : 0.0, dt);
+    const asym = stepSpring(sp.asym, live.mood === "curious" ? 1.0 : 0.0, dt);
+    const wave = stepSpring(sp.wave, live.speaking ? 1.0 : live.mood === "listen" ? 0.12 : 0.0, dt);
+
+    // 3. Clear pure obsidian background
+    ctx.fillStyle = "#07080b";
     ctx.fillRect(0, 0, W, H);
 
-    // Mode A (Focus): just a tiny quiet breathing dot beneath clock
-    if (live.mode === "focus") {
-      const pulse = 0.35 + 0.25 * Math.sin(t * 0.9);
-      ctx.beginPath();
-      ctx.arc(W * 0.5, H * 0.72, 4.5, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(244, 247, 251, ${(pulse * 0.45).toFixed(3)})`;
-      ctx.fill();
-      requestAnimationFrame(frame);
-      return;
-    }
-
-    // Mode C (Desk HUD): subtle background HiLight glow only (card carries the legibility)
-    if (live.mode === "desk") {
-      requestAnimationFrame(frame);
-      return;
-    }
-
-    // Mode B (Dialogue): Expressive Alive Eyes + Living Voice Wave
-    const minDim = Math.min(W, H);
-    const eyeW = minDim * 0.21;
-    const eyeHBase = minDim * 0.28;
-    const spacing = minDim * 0.22;
-    const baseY = H * 0.44;
-    const shiftX = anim.gx * (minDim * 0.13);
-    const shiftY = anim.gy * (minDim * 0.09);
-
-    const rgbStr = `${Math.round(anim.r)}, ${Math.round(anim.g)}, ${Math.round(anim.b)}`;
-    const eyeColor = live.mood === "idle" ? "#eef6ff" : `rgb(${rgbStr})`;
-
-    // Soft glow behind eyes
-    ctx.save();
-    ctx.shadowColor = `rgba(${rgbStr}, 0.55)`;
-    ctx.shadowBlur = minDim * 0.08;
-
-    [-1, 1].forEach((side) => {
-      const isRight = side === 1;
-      const scaleMod = isRight ? 1.0 + anim.asymmetry * 0.16 : 1.0 - anim.asymmetry * 0.08;
-      const breath = 1.0 + Math.sin(t * 2.1) * 0.018;
-      const ew = eyeW * scaleMod;
-      const eh = Math.max(8, eyeHBase * scaleMod * breath * blinkFactor);
-      const cx = W * 0.5 + side * spacing + shiftX;
-      const cy = baseY + shiftY + (isRight ? -anim.asymmetry * 10 : anim.asymmetry * 6);
-
-      ctx.save();
-      ctx.translate(cx, cy);
-
-      if (anim.smile > 0.55) {
-        // Happy curved arc eye (^^) for nod_yes
-        ctx.strokeStyle = eyeColor;
-        ctx.lineWidth = Math.max(10, minDim * 0.036);
-        ctx.lineCap = "round";
-        ctx.beginPath();
-        ctx.arc(0, eh * 0.18, ew * 0.52, Math.PI * 1.15, Math.PI * 1.85);
-        ctx.stroke();
-      } else {
-        // Sleek OLED geometric pill eye
-        ctx.fillStyle = eyeColor;
-        drawRoundedRect(-ew / 2, -eh / 2, ew, eh, ew * 0.42);
-        ctx.fill();
-
-        // Subtle inner iris highlight for depth
-        if (eh > 26) {
-          ctx.fillStyle = "rgba(255, 255, 255, 0.32)";
-          ctx.beginPath();
-          ctx.arc(ew * 0.16 + anim.gx * 5, -eh * 0.22 + anim.gy * 4, ew * 0.13, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        // Skeptical / "no" top eyelid slant
-        if (anim.frown > 0.08) {
-          ctx.fillStyle = "#000000";
-          ctx.beginPath();
-          const cut = eh * 0.44 * anim.frown;
-          if (side === -1) {
-            ctx.moveTo(-ew * 0.6, -eh * 0.6);
-            ctx.lineTo(ew * 0.6, -eh * 0.6);
-            ctx.lineTo(ew * 0.6, -eh * 0.5 + cut);
-            ctx.lineTo(-ew * 0.6, -eh * 0.5 - cut * 0.1);
-          } else {
-            ctx.moveTo(-ew * 0.6, -eh * 0.6);
-            ctx.lineTo(ew * 0.6, -eh * 0.6);
-            ctx.lineTo(ew * 0.6, -eh * 0.5 - cut * 0.1);
-            ctx.lineTo(-ew * 0.6, -eh * 0.5 + cut);
-          }
-          ctx.closePath();
-          ctx.fill();
-        }
-
-        // Subtle bottom-cheek smile lift when speaking
-        if (anim.smile > 0.08 && anim.smile <= 0.55) {
-          ctx.fillStyle = "#000000";
-          ctx.beginPath();
-          ctx.arc(0, eh * 0.72, ew * 0.62, Math.PI * 1.1, Math.PI * 1.9);
-          ctx.fill();
+    // Subtle drafting grid dots (ultra-faint marked.dev / CAD vibe)
+    if (live.mode !== "focus") {
+      ctx.fillStyle = "rgba(232, 237, 245, 0.045)";
+      const gStep = 36;
+      for (let gx = gStep; gx < W; gx += gStep) {
+        for (let gy = gStep; gy < H; gy += gStep) {
+          ctx.fillRect(gx, gy, 1, 1);
         }
       }
+    }
 
+    if (scale < 0.05) {
+      requestAnimationFrame(frame);
+      return;
+    }
+
+    // 4. Render 3D Wireframe Superellipsoid Head
+    const minDim = Math.min(W, H);
+    const scalePx = minDim * 0.255 * scale;
+    const cx = W * cxNorm;
+    const cy = H * cyNorm;
+    const R = rotMatrix(yaw, pitch, roll);
+
+    const sil = computeSilhouette(R, cx, cy, scalePx, 128);
+
+    // Subtle matte fill inside 3D head silhouette
+    ctx.save();
+    ctx.beginPath();
+    sil.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+    ctx.closePath();
+    const gradFill = ctx.createLinearGradient(cx, cy - scalePx, cx, cy + scalePx);
+    gradFill.addColorStop(0, "rgba(18, 21, 28, 0.92)");
+    gradFill.addColorStop(1, "rgba(10, 12, 16, 0.96)");
+    ctx.fillStyle = gradFill;
+    ctx.fill();
+
+    // Crisp outer 1px wireframe contour
+    ctx.strokeStyle = `rgba(218, 228, 242, ${(0.55 * anim.wireAlpha).toFixed(3)})`;
+    ctx.lineWidth = 1.15;
+    ctx.stroke();
+
+    // Surgical colored bottom-edge specular rim (mirrors HiLight 8-LED color, inspired by reference!)
+    ctx.beginPath();
+    let startedRim = false;
+    for (let i = 0; i < sil.length; i++) {
+      const p = sil[i];
+      if (p.dy > 0.35) {
+        if (!startedRim) { ctx.moveTo(p.x, p.y); startedRim = true; }
+        else ctx.lineTo(p.x, p.y);
+      } else {
+        startedRim = false;
+      }
+    }
+    ctx.strokeStyle = `rgba(${rimRgb}, ${(0.88 * anim.wireAlpha).toFixed(3)})`;
+    ctx.lineWidth = 1.75;
+    ctx.shadowColor = `rgba(${rimRgb}, 0.65)`;
+    ctx.shadowBlur = 10;
+    ctx.stroke();
+    ctx.restore();
+
+    // 5. Dashed 3D construction meridians (vertical + horizontal equator)
+    const merColor = `rgba(188, 200, 218, ${(0.28 * anim.wireAlpha).toFixed(3)})`;
+    drawMeridian(R, "vertical", cx, cy, scalePx, merColor);
+    drawMeridian(R, "horizontal", cx, cy, scalePx, merColor);
+
+    // 6. Crisp hollow center origin node (◦) at front pole (0, 0, 1)
+    const [owx, owy, owz] = mulR(R, 0, 0, 1.0);
+    if (owz > 0.1) {
+      const [ox, oy] = projectWorld(owx, owy, owz, cx, cy, scalePx);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(ox, oy, 2.8, 0, Math.PI * 2);
+      ctx.fillStyle = "#07080b";
+      ctx.fill();
+      ctx.strokeStyle = `rgba(220, 230, 244, ${(0.65 * anim.wireAlpha).toFixed(3)})`;
+      ctx.lineWidth = 1.1;
+      ctx.stroke();
       ctx.restore();
+
+      // Thinking state: crisp dashed technical orbital ring around center node
+      if (live.busy) {
+        ctx.save();
+        ctx.strokeStyle = `rgba(${rimRgb}, 0.85)`;
+        ctx.lineWidth = 1.3;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.arc(ox, oy, scalePx * 0.18, t * 3.5, t * 3.5 + Math.PI * 1.35);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // 7. Two 3D-projected CAD eyes (45° hatching + perimeter vector nodes)
+    const hatchColor = `rgba(198, 212, 232, ${(0.42 * anim.wireAlpha).toFixed(3)})`;
+    const nodeColor = `rgba(218, 228, 244, ${(0.76 * anim.wireAlpha).toFixed(3)})`;
+    [-1, 1].forEach((side) => {
+      const scaleMod = side === 1 ? 1.0 + asym * 0.16 : 1.0 - asym * 0.08;
+      drawDraftingEye(R, side, cx, cy, scalePx, {
+        openFactor: Math.max(0.08, eyeOpen),
+        smile,
+        frown,
+        asym,
+        scaleMod,
+        strokeAlpha: anim.wireAlpha,
+        nodeColor,
+        hatchColor,
+        rimRgb
+      });
     });
 
-    // Thinking orbital arc around center when Brain is working
-    if (live.busy) {
+    // 8. Speaking state: subtle technical oscilloscope ticks along lower cube face
+    if (wave > 0.05 && live.mode === "dialogue") {
       ctx.save();
-      ctx.strokeStyle = `rgba(${rgbStr}, 0.75)`;
-      ctx.lineWidth = 3.5;
-      ctx.lineCap = "round";
-      const rOrbit = minDim * 0.055;
-      const a0 = t * 4.2;
-      ctx.beginPath();
-      ctx.arc(W * 0.5, H * 0.76, rOrbit, a0, a0 + Math.PI * 1.25);
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    // Living organic voice wave beneath eyes when listening / speaking
-    if (anim.waveAmp > 0.03 && !live.busy) {
-      const waveW = minDim * 0.54;
-      const waveY = H * 0.74;
-      const amp = minDim * 0.055 * anim.waveAmp;
-      ctx.save();
-      ctx.strokeStyle = `rgba(${rgbStr}, ${(0.35 + 0.55 * anim.waveAmp).toFixed(2)})`;
-      ctx.lineWidth = Math.max(3, minDim * 0.011);
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      const steps = 48;
-      for (let i = 0; i <= steps; i++) {
-        const u = i / steps;
-        const env = Math.sin(u * Math.PI);
-        const x = W * 0.5 - waveW / 2 + u * waveW;
-        const y =
-          waveY +
-          env *
-            amp *
-            (Math.sin(u * 11.0 - t * 9.5) * 0.62 +
-              Math.sin(u * 19.0 + t * 6.2) * 0.38);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+      const bars = 13;
+      const halfSpan = 0.34;
+      for (let i = 0; i < bars; i++) {
+        const u = (i / (bars - 1)) * 2 - 1;
+        const env = 1 - u * u;
+        const hBar = (0.015 + env * 0.075 * Math.abs(Math.sin(t * 9.5 + i * 0.9))) * wave;
+        const [sx1, sy1, sz1] = toSuperSurface(u * halfSpan, 0.56 - hBar, 1.0);
+        const [sx2, sy2, sz2] = toSuperSurface(u * halfSpan, 0.56 + hBar, 1.0);
+        const [w1x, w1y, w1z] = mulR(R, sx1, sy1, sz1);
+        const [w2x, w2y, w2z] = mulR(R, sx2, sy2, sz2);
+        if (w1z > 0.1) {
+          const [p1x, p1y] = projectWorld(w1x, w1y, w1z, cx, cy, scalePx);
+          const [p2x, p2y] = projectWorld(w2x, w2y, w2z, cx, cy, scalePx);
+          ctx.strokeStyle = `rgba(${rimRgb}, ${(0.45 + 0.5 * env).toFixed(2)})`;
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.moveTo(p1x, p1y);
+          ctx.lineTo(p2x, p2y);
+          ctx.stroke();
+        }
       }
-      ctx.stroke();
       ctx.restore();
     }
 
-    ctx.restore();
     requestAnimationFrame(frame);
   }
 
