@@ -10,7 +10,7 @@
   "kp_pitch": 31.4,
   "kd": 3.6,
   "deadzone": 0.09,
-  "max_dps": 55.0,
+  "max_dps": 90.0,
   "measured": {
     "a_dx_norm": 0.0,
     "a_dy_norm": 0.59,

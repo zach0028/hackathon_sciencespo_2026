@@ -62,8 +62,8 @@ class PidConfig:
     kp_pitch: float = 30.0
     kd: float = 3.5
     deadzone: float = 0.09
-    max_dps: float = 55.0
-    max_accel_dps2: float = 150.0  # slew-rate limit for buttery cinema ramps
+    max_dps: float = 90.0
+    max_accel_dps2: float = 210.0  # crisp high-torque ramps while staying under OM3 100 deg/s wire cap
     target_y: float = -0.08  # slight headroom (rule of thirds)
     # Calibrated reference mapping (measured at cal_rotate_deg / cal_mirror)
     cal_rotate_deg: int = 0
@@ -229,7 +229,7 @@ class MotionArbiter:
     """Arbitrates Priority 1 (Manual/Gesture) > Priority 2 (Face PID) > Priority 3 (Search/Home FSM)."""
 
     config: PidConfig = field(default_factory=PidConfig)
-    live_motors: bool = False
+    live_motors: bool = True
     control_mode: str = "speed"
     desk_mode: bool = False  # True when using back camera on sheet/table
     ai_hold_mode: bool = False  # True when AI explicitly holds gimbal orientation (pauses face PID)

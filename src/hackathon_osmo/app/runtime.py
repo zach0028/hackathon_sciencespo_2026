@@ -133,6 +133,7 @@ class StudioRuntime:
         self._last_expr_t: float = 0.0
         self._came_from_desk_for_board: bool = False
         self._idle_zero_sent: int = 0
+        self._last_ble_tx_t: float = 0.0
         self._limp_warn_t: float = 0.0
         self._prewarm_desk_task: asyncio.Task[tuple[float | None, float | None]] | None = None
         self._prewarm_face_task: asyncio.Task[None] | None = None
@@ -166,7 +167,7 @@ class StudioRuntime:
             cfg.kp = round((cfg.kp_yaw + cfg.kp_pitch) / 2.0, 1)
             cfg.kd = round(float(cal.get("kd", 3.6)), 1)
             cfg.deadzone = float(cal.get("deadzone", 0.09))
-            cfg.max_dps = float(cal.get("max_dps", 55.0))
+            cfg.max_dps = float(cal.get("max_dps", 90.0))
             if isinstance(cal.get("face_pose"), dict):
                 self.face_pose.update(cal["face_pose"])
             if isinstance(cal.get("desk_pose"), dict):
@@ -1755,13 +1756,13 @@ class StudioRuntime:
                     cmd_pitch = interp.cmd_pitch_dps
                     att = self._osmo.last_attitude
 
-                    # Soft mechanical end-stop guard: NEVER slam into OM3's -30° upward or +65° downward limit!
+                    # Soft mechanical end-stop guard (widened to [-25°, +64°], just inside OM3's hard -30°/+67° stops!)
                     if att is not None:
-                        if att.pitch_deg <= -20.0 and cmd_pitch > 0.0:
+                        if att.pitch_deg <= -25.0 and cmd_pitch > 0.0:
                             cmd_pitch = 0.0
-                        elif att.pitch_deg >= 60.0 and cmd_pitch < 0.0:
+                        elif att.pitch_deg >= 64.0 and cmd_pitch < 0.0:
                             cmd_pitch = 0.0
-                        # Detect physical motor overload / standby limp state (pitch drops below -30° while idle)
+                        # Auto-wake if OM3 enters standby/limp protection (pitch drops below -31° while idle)
                         if (
                             not self.arbiter.desk_mode
                             and att.pitch_deg < -31.0
@@ -1772,8 +1773,15 @@ class StudioRuntime:
                             self._limp_warn_t = time.monotonic()
                             self.arbiter.log(
                                 "WARN",
-                                f"Nacelle OM3 en veille/protection moteur (pitch={att.pitch_deg:+.1f}°) — vérifie l'équilibrage du Pixel, le câble USB et la batterie !",
+                                f"Nacelle OM3 en veille/protection (pitch={att.pitch_deg:+.1f}°) — tentative de réveil auto (recenter BLE) !",
                             )
+                            try:
+                                await self._osmo.send_recenter()
+                                self._last_ble_tx_t = time.monotonic()
+                                self.osmo_tx_packets += 1
+                                self.osmo_last_tx = "auto-wake recenter"
+                            except Exception:
+                                pass
 
                     motor_yaw, motor_pitch = screen_to_motor(
                         cmd_yaw,
@@ -1786,6 +1794,7 @@ class StudioRuntime:
 
                     if self.arbiter.control_mode == "speed":
                         is_zero = abs(motor_yaw) < 0.2 and abs(motor_pitch) < 0.2 and abs(interp.cmd_roll_dps) < 0.2
+                        now_ble = time.monotonic()
                         if not is_zero:
                             self._idle_zero_sent = 0
                             await self._osmo.send_speed(
@@ -1794,16 +1803,18 @@ class StudioRuntime:
                                 roll_dps=interp.cmd_roll_dps,
                                 duration_ds=2,
                             )
+                            self._last_ble_tx_t = now_ble
                             self._last_motor_cmd = (motor_yaw, motor_pitch)
                             self.osmo_tx_packets += 1
                             self.osmo_last_tx = f"speed mY={motor_yaw:+.1f} mP={motor_pitch:+.1f}"
-                        elif self._idle_zero_sent < 2:
-                            # Send 2 clean brake packets then stay silent on BLE while idle (cuts BLE TX by ~90%!)
+                        elif self._idle_zero_sent < 2 or (now_ble - self._last_ble_tx_t) >= 8.0:
+                            # Send 2 clean brake packets + gentle 1x/8s anti-sleep BLE keepalive (keeps OM3 awake with zero heat!)
                             self._idle_zero_sent += 1
                             await self._osmo.send_speed(0.0, 0.0, 0.0, duration_ds=2)
+                            self._last_ble_tx_t = now_ble
                             self._last_motor_cmd = (0.0, 0.0)
                             self.osmo_tx_packets += 1
-                            self.osmo_last_tx = "speed STOP"
+                            self.osmo_last_tx = "speed STOP" if self._idle_zero_sent <= 2 else "ble keepalive"
                     elif self.arbiter.control_mode == "relative":
                         if abs(motor_yaw) > 0.5 or abs(motor_pitch) > 0.5:
                             await self._osmo.send_relative(
