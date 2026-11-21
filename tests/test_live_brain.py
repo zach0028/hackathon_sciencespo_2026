@@ -33,6 +33,10 @@ def test_robot_tools_compact_five_tool_hierarchy() -> None:
         assert t["strict"] is True
         assert t["parameters"]["additionalProperties"] is False
 
+    desk_tool = next(t for t in ROBOT_TOOLS if t["name"] == "look_at_desk")
+    assert "read_now" in desk_tool["parameters"]["properties"]
+    assert "read_now" in desk_tool["parameters"]["required"]
+
     screen_tool = next(t for t in ROBOT_TOOLS if t["name"] == "show_on_screen")
     props = screen_tool["parameters"]["properties"]
     # `face_user` must be the FIRST schema property so SSE streams it within ~50ms for parallel arm return!

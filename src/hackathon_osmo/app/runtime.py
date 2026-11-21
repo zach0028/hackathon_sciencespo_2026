@@ -1185,12 +1185,18 @@ class StudioRuntime:
             retarget = bool(args.get("retarget_sheet", args.get("auto_target", True)))
             ultra_hd = bool(args.get("ultra_hd", False))
             scan_pages = bool(args.get("scan_pages", False))
-            return await self.enter_desk_reading_mode(
+            read_now = bool(args.get("read_now", True))
+            res = await self.enter_desk_reading_mode(
                 zoom=zoom,
                 auto_target=retarget,
                 ultra_hd=ultra_hd,
                 scan_pages=scan_pages,
             )
+            if not read_now:
+                # Instant 1-hop reposition back to sheet after "Got it / I noted it" (0ms Round-2 wait!)
+                res.pop("_images", None)
+                res["_spoken_override"] = "I'm back on your sheet, Zach. Point or ask whenever you're ready."
+            return res
 
         # --- 3. move_arm (relative pan/tilt OR panoramic 3-photo room scan) ---
         if name in ("move_arm", "move_gimbal", "scan_room"):
@@ -1369,14 +1375,14 @@ class StudioRuntime:
                     out["_spoken_override"] = spoken
                 return out
 
-            title = str(args.get("title") or "OSMO // NOTES").strip()[:64]
+            title = str(args.get("title") or "OSMO // NOTES").strip()[:68]
             raw_items = args.get("items") or []
             items = [
-                {"text": str(it).strip()[:160], "done": False}
-                for it in raw_items[:5]
+                {"text": str(it).strip()[:220], "done": False}
+                for it in raw_items[:6]
                 if str(it).strip()
             ]
-            note = str(args.get("note") or "").strip()[:180]
+            note = str(args.get("note") or "").strip()[:220]
             valid_modes = ("definition", "concept", "exercise", "exam", "checklist", "feedback")
             clean_mode = mode if mode in valid_modes else "concept"
             was_on_desk = bool(self.arbiter.desk_mode or self._prewarm_face_task is not None)

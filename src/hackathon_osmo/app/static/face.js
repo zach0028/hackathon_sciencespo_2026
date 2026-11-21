@@ -573,6 +573,13 @@
             bodyText = bodyText.slice(0, mTrail.index).trim();
           }
         }
+      } else if (mode === "concept") {
+        // Universal smart label pill: renders any crisp <=14-char label (1789:, Step 1:, Thesis:, Pro:, Con:, Rule:)
+        const mLbl = bodyText.match(/^([A-Za-z0-9][A-Za-z0-9 .\-/#]{0,13})\s*:\s+(.+)$/);
+        if (mLbl) {
+          tag = mLbl[1].trim().toUpperCase();
+          bodyText = mLbl[2].trim();
+        }
       }
       return `<li class="board-item ${extraCls} ${row.done ? "done" : ""}" data-idx="${row.origIdx}"><span class="item-tag">${escHtml(tag)}</span><span class="item-text">${escHtml(bodyText)}</span>${ptsBadge}</li>`;
     }).join("");

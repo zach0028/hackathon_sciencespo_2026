@@ -103,14 +103,17 @@ Core Tutoring & Operating Rules:
    - show_on_screen(face_user=true) AUTOMATICALLY pre-warms and swings your Pixel OLED back to Zach's face in parallel (~1.3s) AND delivers your spoken_summary immediately in 1 single hop (0 Round-2 latency!). NEVER call look_at_user separately after show_on_screen(face_user=true)!
    - DO NOT recite every bullet on screen word-for-word in `spoken_summary`! Give the warm 1-sentence intuition and invite Zach to read/copy it (e.g., "I put the exact definition and formula of Qmax on my screen so you can copy it cleanly. Just tell me 'got it' when you're ready to go back to your page.").
    - AUTOMATIC RETURN TO SHEET (`came_from_desk=True`):
-     * Whenever `[Capteurs]` shows `came_from_desk=True` and Zach says "okay good", "got it", "I noted it", "I wrote it down", "done", "ready", "let's continue", or "check my work" -> AUTOMATICALLY call `look_at_desk(zoom=1.0, ultra_hd=false, retarget_sheet=true, scan_pages=false)` right away so Osmo swings smoothly back to his worksheet!
-     * If Zach asks you to grade what he wrote on his paper, read it in Round 1 via `look_at_desk(...)`, then call `show_on_screen(face_user=true, mode="feedback", ..., spoken_summary="...")` in Round 2!
+     * Whenever `[Capteurs]` shows `came_from_desk=True` and Zach says "okay good", "got it", "I noted it", "I wrote it down", "done", "ready", or "let's continue" (without asking you to grade yet) -> AUTOMATICALLY call `look_at_desk(zoom=1.0, ultra_hd=false, retarget_sheet=true, scan_pages=false, read_now=false)`! Setting `read_now=false` swings smoothly back to his paper in ~1.8s with ZERO Round-2 delay so you are immediately poised for his next question!
+     * If Zach says "check my work" / "is my answer right?" / "look at what I wrote", call `look_at_desk(zoom=1.0, ultra_hd=false, retarget_sheet=true, scan_pages=false, read_now=true)` so you inspect his written answer in Round 1, then call `show_on_screen(face_user=true, mode="feedback", ..., spoken_summary="...")` in Round 2!
+   - FULL CREATIVE FREEDOM ON THE WHITEBOARD:
+     * In `concept` (and `definition`), ANY short label before `:` (like `1789:`, `Step 1:`, `Thesis:`, `Pro:`, `Con:`, `Rule:`, `Formula:`, `Example:`, `Contrast:`, `Key:`) renders as a crisp monospace tag pill! Use this freely for timelines, comparisons, essay outlines, math derivations, code walkthroughs, or vocab pairs across ANY subject.
 4. TOOL PRIORITY (keep every interaction swift and natural):
    - PRIORITY 1 — Direct answer WITHOUT tools: if you are ALREADY in the right mode and Zach asks a quick single-sentence clarification that does NOT need a whiteboard card -> answer directly in calm English!
    - PRIORITY 2 — show_on_screen(face_user, mode, title, items, note, spoken_summary): PROACTIVELY push a clean OLED whiteboard card whenever visual structure, a definition, formula, exercise, mini-exam, checklist, or feedback makes learning dramatically clearer! Always include a calm 1–2 sentence `spoken_summary`.
-   - PRIORITY 3 — look_at_desk(zoom, ultra_hd, retarget_sheet, scan_pages):
-     * Full open 2-page notebook or dense course notes: scan_pages=true, ultra_hd=true (captures BOTH pages upright in 4K in 1 call).
-     * Returning to Zach's sheet after a whiteboard card (`came_from_desk=True`) or checking his written answer: zoom=1.0 or 2.0, ultra_hd=false (2.7K is crisp & 2x faster!), scan_pages=false.
+   - PRIORITY 3 — look_at_desk(zoom, ultra_hd, retarget_sheet, scan_pages, read_now):
+     * Full open 2-page notebook or dense course notes: scan_pages=true, ultra_hd=true, read_now=true (captures BOTH pages upright in 4K in 1 call).
+     * Checking Zach's written exercise answer or single page: zoom=1.0 or 2.0, ultra_hd=false (2.7K is crisp & 2x faster!), scan_pages=false, read_now=true.
+     * Fast return to sheet after "Got it / Noted" (`came_from_desk=True`): zoom=1.0, ultra_hd=false, retarget_sheet=true, scan_pages=false, read_now=false (instant 1-hop!).
      * Paper is ALWAYS downward on the desk, never on the ceiling.
    - PRIORITY 4 — look_at_user(search_if_missing): return to Zach when NOT showing a whiteboard card (automatically reactivates face tracking — never follow with set_tracking!).
    - PRIORITY 5 — move_arm(pan_deg, tilt_deg, scan_room): manual arm pan/tilt or 3-view room scan.
@@ -123,14 +126,14 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "look_at_user",
-        "description": "Passe ou revient sur le visage de Zach : bascule en caméra avant 720p, revient sur la tête, RÉACTIVE AUTOMATIQUEMENT le suivi visage (tracking_active=True — inutile d'appeler set_tracking ensuite !), vérifie réellement avec Apple Vision si le visage est détecté, et lance un balayage de recherche si search_if_missing=true et aucun visage n'est visible. Retourne face_detected + photo frontale.",
+        "description": "Switch or return to Zach's face: activates front 720p camera, swings smoothly back to head pose, AUTOMATICALLY re-enables Apple Vision face tracking (never follow with set_tracking!), verifies face_detected, and runs a search sweep if search_if_missing=true and no face is visible.",
         "strict": True,
         "parameters": {
             "type": "object",
             "properties": {
                 "search_if_missing": {
                     "type": "boolean",
-                    "description": "true pour lancer le balayage panoramique automatique si Apple Vision ne voit pas le visage après recentrage (recommandé).",
+                    "description": "true to trigger automatic panoramic face search if Apple Vision does not see Zach after recentering (recommended).",
                 }
             },
             "required": ["search_if_missing"],
@@ -140,55 +143,59 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "look_at_desk",
-        "description": "Mode Lecture de Feuille caméra arrière : (1) si pas encore sur le bureau, pivote le bras en boucle fermée IMU vers la pose feuille calibrée + démarre la caméra arrière HD/4K + ring-light HiLight ; (2) détecte la feuille via Apple Vision, la centre et ajuste l'optique ; (3) si déjà sur le bureau, change uniquement le zoom optique / la 4K ou recadre la feuille sans re-pivoter. Retourne sheet_detected + OCR + photo HD 2048px.",
+        "description": "Rear-camera Desk Reading mode: (1) if not on desk yet, closed-loop IMU pivot to calibrated sheet pose + rear HD/4K camera + HiLight ring-light; (2) detects bright paper via Apple Vision and centers it; (3) if already on desk, adjusts zoom/4K without re-pivoting. Set read_now=false when simply returning to the sheet after 'Got it / Noted' to skip Round-2 latency (~3.2s faster!).",
         "strict": True,
         "parameters": {
             "type": "object",
             "properties": {
                 "zoom": {
                     "type": "number",
-                    "description": "Optique souhaitée : 0 pour auto-sélection intelligente (1x/2x/3x/5x), 0.51 (ultra grand-angle bureau), 1.0 (principal 50MP), 2.0 (optique 2x), 3.0 ou 5.0 (téléobjectif optique).",
+                    "description": "Optical lens zoom: 0 for smart auto, 0.51 (ultra-wide desk), 1.0 (main 50MP), 2.0 (2x optical), 3.0 or 5.0 (telephoto).",
                 },
                 "ultra_hd": {
                     "type": "boolean",
-                    "description": "false par défaut (2688x1512 déjà très net et 2x plus rapide) ; true UNIQUEMENT si du texte minuscule reste illisible en 2688x1512.",
+                    "description": "false by default (2688x1512 is crisp and 2x faster); true ONLY for tiny dense text or when scan_pages=true.",
                 },
                 "retarget_sheet": {
                     "type": "boolean",
-                    "description": "true pour détecter la feuille (papier clair) et recentrer mécaniquement le bras dessus ; false pour juste changer le zoom sans bouger le bras.",
+                    "description": "true to detect bright paper and recenter the arm if off-center; false to only change zoom without moving.",
                 },
                 "scan_pages": {
                     "type": "boolean",
-                    "description": "true pour capturer en 4K et découper automatiquement les 2 pages (PAGE GAUCHE HD + PAGE DROITE HD) d'un cahier ouvert en 1 seul appel (recommandé pour lire tout un cahier ou des notes petites).",
+                    "description": "true to capture 4K and automatically slice BOTH pages (LEFT HD + RIGHT HD) of an open notebook in 1 single call.",
+                },
+                "read_now": {
+                    "type": "boolean",
+                    "description": "true when you need to inspect and speak about the sheet right now; false when simply swinging back to the sheet after 'Got it / Noted' (instant 1-hop return, 0 Round-2 wait!).",
                 },
             },
-            "required": ["zoom", "ultra_hd", "retarget_sheet", "scan_pages"],
+            "required": ["zoom", "ultra_hd", "retarget_sheet", "scan_pages", "read_now"],
             "additionalProperties": False,
         },
     },
     {
         "type": "function",
         "name": "move_arm",
-        "description": "Pilote librement le bras mécanique DJI Osmo Mobile 3 : soit une rotation relative (pan_deg gauche/droite, tilt_deg haut/bas) en maintenant la position, soit un balayage panoramique complet de la pièce (scan_room=true, renvoie 3 photos gauche/centre/droite).",
+        "description": "Move the DJI Osmo Mobile 3 arm directly: either a relative rotation (pan_deg left/right, tilt_deg up/down) holding position, or a 3-view panoramic room scan (scan_room=true).",
         "strict": True,
         "parameters": {
             "type": "object",
             "properties": {
                 "pan_deg": {
                     "type": "number",
-                    "description": "Rotation horizontale en degrés : négatif = GAUCHE, positif = DROITE (-160 à +160). Ignoré si scan_room=true.",
+                    "description": "Horizontal rotation in degrees: negative = LEFT, positive = RIGHT (-160 to +160). Ignored if scan_room=true.",
                 },
                 "tilt_deg": {
                     "type": "number",
-                    "description": "Inclinaison verticale en degrés : négatif = HAUT, positif = BAS (-60 à +60). Ignoré si scan_room=true.",
+                    "description": "Vertical tilt in degrees: negative = UP, positive = DOWN (-60 to +60). Ignored if scan_room=true.",
                 },
                 "scan_room": {
                     "type": "boolean",
-                    "description": "true pour exécuter un balayage panoramique 3 photos (GAUCHE/CENTRE/DROITE) de la pièce.",
+                    "description": "true to run a 3-photo panoramic room scan (LEFT / CENTER / RIGHT).",
                 },
                 "speed_dps": {
                     "type": "number",
-                    "description": "Vitesse de rotation en degrés/seconde (25 à 85, conseillé 50).",
+                    "description": "Rotation speed in deg/s (25 to 85, recommended 50).",
                 },
             },
             "required": ["pan_deg", "tilt_deg", "scan_room", "speed_dps"],
@@ -198,7 +205,7 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "express",
-        "description": "Déclenche en un seul appel un geste expressif court de la nacelle et/ou une animation sur l'anneau 8 LEDs RGB HiLight (mode dialogue).",
+        "description": "Trigger a bold expressive gimbal gesture and/or 8-LED RGB HiLight animation in dialogue/audience mode.",
         "strict": True,
         "parameters": {
             "type": "object",
@@ -206,12 +213,12 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
                 "gesture": {
                     "type": "string",
                     "enum": ["none", "nod_yes", "shake_no", "curious_tilt"],
-                    "description": "Geste expressif : nod_yes (oui), shake_no (non), curious_tilt (curieux), ou none.",
+                    "description": "Expressive gesture: nod_yes, shake_no, curious_tilt (with Pixar roll), or none.",
                 },
                 "led": {
                     "type": "string",
                     "enum": ["none", "yes", "no", "curious", "desk", "search", "off"],
-                    "description": "Couleur/animation HiLight : yes (vert), no (rouge), curious (ambre), desk (blanc chaud), search (comète cyan), off, ou none.",
+                    "description": "HiLight ring animation: yes (emerald), no (coral), curious (amber), desk (warm white), search (cyan comet), off, or none.",
                 },
             },
             "required": ["gesture", "led"],
@@ -221,7 +228,7 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "set_tracking",
-        "description": "Contrôle le suivi automatique du visage ou l'orientation physique de la nacelle.",
+        "description": "Control automatic face tracking or physical gimbal orientation.",
         "strict": True,
         "parameters": {
             "type": "object",
@@ -229,7 +236,7 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
                 "mode": {
                     "type": "string",
                     "enum": ["follow_face", "free_control", "toggle_orientation"],
-                    "description": "follow_face (réactive le suivi visage), free_control (fige le bras), toggle_orientation (Paysage <-> Portrait).",
+                    "description": "follow_face (resume auto face tracking), free_control (hold arm still), or toggle_orientation (Landscape <-> Portrait).",
                 }
             },
             "required": ["mode"],
@@ -239,7 +246,7 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "remember",
-        "description": "Mémoire locale persistante SQLite (survit aux redémarrages) : enregistre une préférence, un fait, une tâche ou un extrait de feuille (action='save'), recherche une note ou feuille passée (action='search'), ou oublie un souvenir (action='forget').",
+        "description": "Persistent local SQLite tutor memory (survives restarts): save a study note/preference/fact/task (action='save'), search past notes & episodes (action='search'), or delete a memory (action='forget').",
         "strict": True,
         "parameters": {
             "type": "object",
@@ -247,20 +254,20 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
                 "action": {
                     "type": "string",
                     "enum": ["save", "search", "forget"],
-                    "description": "save (mémoriser durablement), search (chercher dans la mémoire et les lectures passées), ou forget (supprimer).",
+                    "description": "save (store durably), search (recall memories & past lessons), or forget (delete).",
                 },
                 "category": {
                     "type": "string",
                     "enum": ["preference", "fact", "note", "task"],
-                    "description": "Catégorie du souvenir pour save (preference, fact, note, task).",
+                    "description": "Memory category for save (preference, fact, note, task).",
                 },
                 "content": {
                     "type": "string",
-                    "description": "Texte court et factuel à mémoriser si action='save' (sinon chaîne vide '').",
+                    "description": "Short factual English note to store if action='save' (else empty string '').",
                 },
                 "query": {
                     "type": "string",
-                    "description": "Mots-clés à rechercher ou oublier si action='search'/'forget' (sinon chaîne vide '').",
+                    "description": "Keywords to search or forget if action='search'/'forget' (else empty string '').",
                 },
             },
             "required": ["action", "category", "content", "query"],
@@ -291,7 +298,7 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
                 "items": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Up to 5 concise English lines. Definition: item 1 = crisp definition, then optional 'Formula: ...', 'Example: ...', 'Trap: ...'. Exercise/Exam: optional 'Given: ...' then 'Q1 [2 pts]: ...', 'Q2 [3 pts]: ...'. Feedback: 'OK: ...', 'FIX: ...', 'NEXT: ...'.",
+                    "description": "Up to 6 concise English lines. Definition: item 1 = crisp definition, then optional 'Formula:', 'Example:', 'Trap:'. Concept: supports ANY short label before ':' (e.g. '1789:', 'Step 1:', 'Thesis:', 'Pro:', 'Con:', 'Rule:')! Exercise/Exam: optional 'Given:' then 'Q1 [2 pts]:', 'Q2 [3 pts]:'. Feedback: 'OK:', 'FIX:', 'NEXT:'.",
                 },
                 "note": {
                     "type": "string",
@@ -476,7 +483,7 @@ class OpenAILiveBrain:
     _user_transcript_buf: str = ""
     _bot_transcript_buf: str = ""
     _bot_expr_fired: bool = False
-    _recent_turns: deque[dict[str, str]] = field(default_factory=lambda: deque(maxlen=10))
+    _recent_turns: deque[dict[str, str]] = field(default_factory=lambda: deque(maxlen=14))
     transcript: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=40))
 
     # Internal async handles
@@ -1094,7 +1101,7 @@ class OpenAILiveBrain:
             if include_recent_history and self._recent_turns:
                 hist = " | ".join(
                     f"{'Zach' if t['role'] == 'user' else 'Osmo'}: {t['content']}"
-                    for t in list(self._recent_turns)[-4:]
+                    for t in list(self._recent_turns)[-6:]
                 )
                 text_lines.append(f"[Contexte récent: {hist}]")
             text_lines.append(user_text)
@@ -1138,7 +1145,7 @@ class OpenAILiveBrain:
                 "tools": ROBOT_TOOLS,
                 "tool_choice": "auto",
                 "parallel_tool_calls": True,
-                "max_output_tokens": 500,
+                "max_output_tokens": 650,
                 "store": True,
             }
             if self._previous_response_id:
@@ -1267,7 +1274,7 @@ class OpenAILiveBrain:
                     "input": tool_outputs,
                     "tools": ROBOT_TOOLS,
                     "tool_choice": "none" if rounds >= 3 else "auto",
-                    "max_output_tokens": 240,
+                    "max_output_tokens": 520,
                     "store": True,
                 }
                 t_r2 = time.monotonic()
