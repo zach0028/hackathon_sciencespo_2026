@@ -108,34 +108,59 @@ function drawRadar(v, dz) {
   const ctx = c.getContext('2d');
   const w = c.width, h = c.height, cx = w / 2, cy = h / 2;
   ctx.clearRect(0, 0, w, h);
-  ctx.strokeStyle = '#243044';
-  ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.moveTo(0, cy); ctx.lineTo(w, cy); ctx.stroke();
 
+  // CAD dashed crosshairs + concentric range ring
+  ctx.save();
+  ctx.strokeStyle = 'rgba(232, 237, 245, 0.14)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([2.5, 3.5]);
+  ctx.beginPath();
+  ctx.moveTo(cx, 0); ctx.lineTo(cx, h);
+  ctx.moveTo(0, cy); ctx.lineTo(w, cy);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, w * 0.36, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Deadzone framing square
   const dzPx = (dz / 2) * w;
-  ctx.strokeStyle = 'rgba(245, 185, 66, 0.7)';
+  ctx.strokeStyle = 'rgba(96, 165, 250, 0.45)';
   ctx.strokeRect(cx - dzPx, cy - dzPx, dzPx * 2, dzPx * 2);
+
+  // Center origin hollow node
+  ctx.beginPath();
+  ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
+  ctx.fillStyle = '#07080b';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(232, 237, 245, 0.55)';
+  ctx.stroke();
 
   if (v.face_detected) {
     const fx = cx + v.cx * (w / 2 - 8);
     const fy = cy + v.cy * (h / 2 - 8);
-    ctx.strokeStyle = '#38c9f0';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#60a5fa';
+    ctx.lineWidth = 1.4;
     ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(fx, fy); ctx.stroke();
-    ctx.fillStyle = '#38e58c';
-    ctx.beginPath(); ctx.arc(fx, fy, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#07080b';
+    ctx.beginPath(); ctx.arc(fx, fy, 4.5, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#34d399';
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
   }
+  ctx.restore();
 }
 
 function render(s) {
   const camOk = s.camera.status.startsWith('live_');
   document.getElementById('dot-cam').className = 'dot ' + (camOk ? 'ok' : 'warn');
-  document.getElementById('lbl-cam').textContent = `Pixel 11 Pro : ${s.camera.status} (${(s.camera.zoom || 1).toFixed(1)}×)`;
+  document.getElementById('lbl-cam').textContent = `PIXEL · ${s.camera.status.toUpperCase()} (${(s.camera.zoom || 1).toFixed(1)}×)`;
   document.getElementById('lbl-fps').textContent = `${s.camera.fps} fps`;
   document.getElementById('lbl-rot').textContent = `${s.camera.rotate_deg}°`;
   const lblRes = document.getElementById('lbl-res');
   if (lblRes && s.camera.width) {
-    const sh = s.camera.sheet && s.camera.sheet.found ? ` · 📄 ${s.camera.sheet.lines_count}L` : '';
+    const sh = s.camera.sheet && s.camera.sheet.found ? ` · SHEET ${s.camera.sheet.lines_count}L` : '';
     lblRes.textContent = `${s.camera.width}×${s.camera.height} · ${(s.camera.zoom || 1).toFixed(1)}×${sh}`;
   }
   const z = Number(s.camera.zoom || 1.0);
@@ -159,16 +184,22 @@ function render(s) {
       dotHl.style.boxShadow = '';
     }
     document.getElementById('lbl-hl').textContent = s.hilight.connected
-      ? `HiLight (${s.hilight.num_lights} LEDs) : ${s.hilight.effect}`
-      : 'HiLight : attente...';
+      ? `HILIGHT · ${String(s.hilight.effect || 'idle').toUpperCase()}`
+      : 'HILIGHT · WAIT';
   }
 
   document.getElementById('dot-osmo').className = 'dot ' + (s.osmo.connected ? 'ok' : 'err');
-  document.getElementById('lbl-osmo').textContent = s.osmo.connected ? `Osmo : ${s.osmo.name}` : 'Osmo BLE : déconnecté';
+  document.getElementById('lbl-osmo').textContent = s.osmo.connected ? `OSMO · ${s.osmo.name}` : 'OSMO · OFFLINE';
 
   const btnLive = document.getElementById('btn-live');
-  btnLive.textContent = s.osmo.live_motors ? '🟢 Moteurs : LIVE' : '⏸ Moteurs : DRY-RUN';
+  btnLive.textContent = s.osmo.live_motors ? 'MOTORS : LIVE' : 'MOTORS : DRY-RUN';
   btnLive.className = s.osmo.live_motors ? 'live-on' : '';
+
+  const lblLat = document.getElementById('lbl-latency');
+  if (lblLat && s.telemetry && s.telemetry.latencies_ms) {
+    const p50 = Number(s.telemetry.latencies_ms.turn_total_p50 || 0);
+    lblLat.textContent = p50 > 0 ? `P50 ${(p50 / 1000).toFixed(1)}s` : 'P50 —';
+  }
 
   document.getElementById('btn-mode-speed').className = s.osmo.control_mode === 'speed' ? 'active' : '';
   document.getElementById('btn-mode-rel').className = s.osmo.control_mode === 'relative' ? 'active' : '';

@@ -203,7 +203,18 @@
       lastActivityAt = performance.now();
     }
 
-    live.hilightColor = Array.isArray(hi.color) && hi.color.length === 3 ? hi.color : null;
+    // Parse HiLight color whether hex string ("#34d399") or [r,g,b] tuple
+    if (typeof hi.color === "string" && /^#[0-9a-fA-F]{6}$/.test(hi.color)) {
+      live.hilightColor = [
+        parseInt(hi.color.slice(1, 3), 16),
+        parseInt(hi.color.slice(3, 5), 16),
+        parseInt(hi.color.slice(5, 7), 16)
+      ];
+    } else if (Array.isArray(hi.color) && hi.color.length === 3) {
+      live.hilightColor = hi.color;
+    } else {
+      live.hilightColor = null;
+    }
     live.hilightEffect = String(hi.effect || "off");
     live.speaking = speaking;
     live.busy = busy;

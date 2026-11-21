@@ -24,17 +24,17 @@ function renderVoiceState(voice) {
   const lbl = document.getElementById('lbl-voice-status');
   if (!textBusy) {
     if (!voice.ready) {
-      lbl.textContent = '⚠️ OPENAI_API_KEY manquante';
+      lbl.textContent = 'NO API KEY';
     } else if (voice.busy) {
-      lbl.textContent = `🧠 ${voice.brain_model} (${voice.reasoning_effort})...`;
+      lbl.textContent = `THINKING · ${voice.brain_model}`;
     } else if (voice.speaking) {
-      lbl.textContent = '🗣️ Osmo parle (full-duplex)';
+      lbl.textContent = 'SPEAKING · FULL-DUPLEX';
     } else if (liveActive && voice.sideband_connected) {
-      lbl.textContent = micMuted ? '🔇 Live actif (micro muet)' : '🟢 GPT-Live 1.1 + Sideband actifs';
+      lbl.textContent = micMuted ? 'LIVE · MUTED' : 'LIVE · ACTIVE';
     } else if (liveActive) {
-      lbl.textContent = '🟡 WebRTC connecté (sideband...)';
+      lbl.textContent = 'WEBRTC · LINKING';
     } else {
-      lbl.textContent = '✅ Prêt (OpenAI direct)';
+      lbl.textContent = 'READY';
     }
   }
 
@@ -190,13 +190,13 @@ async function startLiveCall() {
     liveActive = true;
     startVuLoop(micStream);
     btn.classList.add('recording');
-    btn.textContent = '⏹️ Raccrocher GPT-Live';
+    btn.textContent = 'STOP LIVE SESSION';
     btnMute.disabled = false;
-    btnMute.textContent = '🔊 Micro actif';
+    btnMute.textContent = 'MIC ON';
     btnMute.className = 'active';
-    lbl.textContent = '🟢 GPT-Live 1.1 connecté (parle librement !)';
+    lbl.textContent = 'LIVE · CONNECTED';
   } catch (err) {
-    lbl.textContent = '❌ ' + (err.message || err);
+    lbl.textContent = 'ERR · ' + (err.message || err);
     await stopLiveCall();
   } finally {
     btn.disabled = false;
@@ -237,9 +237,9 @@ async function stopLiveCall() {
   const btn = document.getElementById('btn-gpt-live');
   const btnMute = document.getElementById('btn-mute');
   btn.classList.remove('recording');
-  btn.textContent = '🎙️ Démarrer GPT-Live (Full-Duplex)';
+  btn.textContent = 'START LIVE SESSION';
   btnMute.disabled = true;
-  btnMute.textContent = '🔊 Micro actif';
+  btnMute.textContent = 'MIC ON';
   btnMute.className = '';
   document.getElementById('vu-fill').style.width = '0%';
 }
@@ -251,7 +251,7 @@ function toggleMicMute() {
     track.enabled = !micMuted;
   }
   const btnMute = document.getElementById('btn-mute');
-  btnMute.textContent = micMuted ? '🔇 Micro muet' : '🔊 Micro actif';
+  btnMute.textContent = micMuted ? 'MIC MUTED' : 'MIC ON';
   btnMute.className = micMuted ? 'danger' : 'active';
 }
 
