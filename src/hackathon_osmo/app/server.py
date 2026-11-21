@@ -239,6 +239,9 @@ async def ws_endpoint(ws: WebSocket) -> None:
             elif action == "return_face_mode":
                 asyncio.create_task(runtime.return_to_face_mode())
 
+            elif action == "save_face_pose":
+                runtime.save_current_face_pose()
+
             elif action == "save_desk_pose":
                 runtime.save_current_desk_pose()
 

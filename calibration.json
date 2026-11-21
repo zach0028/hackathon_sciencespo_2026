@@ -19,10 +19,13 @@
     "k_horiz": 0.0213,
     "k_vert": 0.0375
   },
+  "face_pose": {
+    "pitch_deg": 5.3,
+    "pan_roll_deg": 179.3
+  },
   "desk_pose": {
     "pitch_deg": 46.0,
-    "roll_deg": -66.3,
-    "yaw_offset_deg": 180.0,
+    "pan_roll_deg": -66.3,
     "width": 2688,
     "height": 1512,
     "bitrate": 16000000,

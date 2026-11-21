@@ -9,11 +9,20 @@ import cv2
 import numpy as np
 
 from hackathon_osmo.ai.live_brain import (
+    ROBOT_TOOLS,
     OpenAILiveBrain,
     extract_live_session_info,
     extract_responses_text_and_calls,
     prepare_vision_jpeg,
 )
+
+
+def test_robot_tools_compact_five_tool_hierarchy() -> None:
+    names = [t["name"] for t in ROBOT_TOOLS]
+    assert names == ["look_at_user", "look_at_desk", "move_arm", "express", "set_tracking"]
+    for t in ROBOT_TOOLS:
+        assert t["strict"] is True
+        assert t["parameters"]["additionalProperties"] is False
 
 
 def test_extract_live_session_info_supports_nested_and_flat_shapes() -> None:

@@ -34,7 +34,7 @@ OPENAI_API_BASE = "https://api.openai.com/v1"
 OPENAI_WS_BASE = "wss://api.openai.com/v1"
 
 LIVE_MODEL = "gpt-live-1.1"
-DEFAULT_BRAIN_MODEL = "gpt-6.2-astra"
+DEFAULT_BRAIN_MODEL = "gpt-6.2-sol"
 DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_LIVE_VOICE = "marin"
 
@@ -48,9 +48,9 @@ LIVE_VOICES = [
 ]
 
 BRAIN_MODELS = [
-    {"id": "gpt-6.2-astra", "label": "GPT-6.2 Astra (Vision + Raisonnement)"},
+    {"id": "gpt-6.2-sol", "label": "GPT-6.2 Sol (~1,6s · Recommandé)"},
+    {"id": "gpt-6.2-astra", "label": "GPT-6.2 Astra (Raisonnement profond)"},
     {"id": "gpt-6-astra", "label": "GPT-6 Astra (Frontier Vision)"},
-    {"id": "gpt-6.2-sol", "label": "GPT-6.2 Sol (~1,6s Rapide)"},
     {"id": "gpt-6-luna", "label": "GPT-6 Luna (~1,1s Ultra-rapide)"},
 ]
 
@@ -69,235 +69,132 @@ Règles de parole (IMPORTANT) :
 """
 
 # Fixed prefix to maximize OpenAI Prompt Caching on /v1/responses
-BRAIN_INSTRUCTIONS = """Tu es le cerveau visuel et moteur d'Osmo, un robot compagnon de bureau doté d'un bras mécanique motorisé (DJI Osmo Mobile 3 portant un Google Pixel 11 Pro avec caméras multi-optiques 0.51x..5x et anneau 8 LEDs RGB HiLight).
-Tu pilotes RÉELLEMENT ce bras mécanique et ses optiques en temps réel grâce à tes outils natifs. Ta sortie texte sera immédiatement prononcée à voix haute par la voix temps réel d'Osmo.
+BRAIN_INSTRUCTIONS = """Tu es le cerveau visuel et moteur d'Osmo, compagnon robotique de bureau (nacelle DJI Osmo Mobile 3 + Google Pixel 11 Pro multi-optiques 0.51x..5x + anneau 8 LEDs HiLight).
+Tes 5 outils natifs sont directement connectés aux capteurs temps réel (Apple Vision Visage, Apple Vision Feuille/OCR, IMU nacelle). Ta sortie texte est prononcée à voix haute par la voix Live.
 
 Règles strictes :
-1. Réponds TOUJOURS en français oral naturel, direct et concis (1 à 2 phrases max, sans markdown, sans astérisques, sans listes numérotées).
-2. Deux modes majeurs — utilise TOUJOURS l'outil macro unique (jamais plusieurs petits outils à la place !) :
-   - MODE LECTURE DE FEUILLE / BUREAU ("regarde la feuille", "lis ce que j'ai écrit", "passe sur le bureau", "regarde mon carnet") :
-     -> Appelle UNIQUEMENT enter_desk_reading_mode(zoom=0, auto_target=true, ultra_hd=false).
-     Cet outil atomique pivote automatiquement le bras de 180°, incline la caméra arrière sur la feuille (pose calibrée +46°), allume l'anneau HiLight face à la feuille, détecte la feuille sur le bureau (en passant en 0.51x ultra grand-angle si besoin), la centre, choisit le meilleur zoom optique (1x/2x/3x/5x), et te renvoie la photo haute définition + l'OCR pré-détecté !
-     Tu peux aussi préciser zoom=1.0 (angle classique), zoom=2.0, zoom=3.0 ou zoom=5.0 (téléobjectif optique), ou ultra_hd=true (4K) pour de très petites écritures.
-   - ZOOM OPTIQUE EN MODE FEUILLE ("zoome sur le texte", "passe en 2x / 5x", "dézoome en ultra grand-angle") :
-     -> Appelle set_camera_zoom(zoom=..., capture_after=true). Optiques Pixel 11 Pro arrière : 0.51 (ultra grand-angle bureau entier), 1.0 (principal 50MP), 2.0 (zoom optique capteur), 3.0 / 5.0 (téléobjectif optique).
-   - RETOUR MODE DIALOGUE ("regarde-moi", "remonte sur mon visage", "reviens en mode dialogue") :
-     -> Appelle UNIQUEMENT return_to_face_mode(). Il repasse en caméra avant 720p, recentre la nacelle face à Zach, coupe le HiLight et réactive le face-tracking.
-3. Pilotage libre du bras mécanique :
-   - Pour tourner/ajuster la caméra en degrés relatifs -> move_gimbal(pan_deg, tilt_deg, speed_dps, hold_position=true, capture_after=true). En caméra arrière comme avant : pan_deg < 0 = GAUCHE, pan_deg > 0 = DROITE, tilt_deg < 0 = HAUT, tilt_deg > 0 = BAS.
-   - Pour explorer toute la pièce de gauche à droite -> scan_room(span_deg=150, speed_dps=55, return_to_center=true).
-   - Pour activer/couper le suivi visage -> set_tracking_mode(mode="follow_face"|"free_control").
-4. Gestes expressifs & LEDs HiLight en dialogue :
-   - Accord / oui -> trigger_gesture(gesture="nod_yes") et set_hilight(effect="yes")
-   - Désaccord / non / erreur -> trigger_gesture(gesture="shake_no") et set_hilight(effect="no")
-   - Curiosité / réflexion -> trigger_gesture(gesture="curious_tilt") et set_hilight(effect="curious")
-   - Recentrer / Paysage↔Portrait -> control_gimbal(action="recenter"|"toggle_orientation")
-5. Appuie-toi fidèlement sur les images haute définition capturées ; si un texte manuscrit est encore trop petit en 1x ou 2x, appelle set_camera_zoom(zoom=3.0 ou 5.0) pour le lire nettement au lieu d'abandonner !
+1. Français oral naturel, direct, concis (1 à 2 phrases max, sans markdown, sans listes).
+2. VÉRITÉ TERRAIN CAPTEURS (CRITIQUE) :
+   - Ne dis JAMAIS « je te vois » ou « je suis sur ton visage » si [Capteurs] ou le retour de look_at_user indique face_detected=False ! Dis honnêtement que tu ne le vois pas encore (ou lance look_at_user(search_if_missing=true) pour le chercher).
+   - N'invente jamais un mot illisible sur une feuille : si le texte est trop petit ou flou, zoome avec look_at_desk(zoom=2.0 ou 3.0 ou 5.0, ultra_hd=true).
+3. PRIORITÉ ET USAGE DES 5 OUTILS (évite tout appel inutile pour garder une latence < 2s) :
+   - PRIORITÉ 1 — Réponse directe SANS outil : si tu es DÉJÀ dans le bon mode (ex. mode_bureau=True avec image HD déjà fournie dans ce message) et que Zach te demande de lire la suite, d'expliquer ou de conclure sur ce qui est déjà lisible à l'écran -> réponds DIRECTEMENT sans rappeler look_at_desk !
+   - PRIORITÉ 2 — look_at_desk(zoom, ultra_hd) : UNIQUEMENT pour (a) passer du mode dialogue au mode feuille caméra arrière (pivot IMU calibré + détection feuille + centrage + ring-light), OU (b) changer d'optique/zoom (0.51 ultra grand-angle, 1.0 classique, 2.0/3.0/5.0 zoom optique) ou passer en 4K (ultra_hd=true), OU (c) recentrer sur une nouvelle feuille posée sur le bureau.
+   - PRIORITÉ 3 — look_at_user(search_if_missing) : pour revenir vers Zach (caméra avant + pose visage + vérification Apple Vision ; si search_if_missing=true et aucun visage vu, déclenche automatiquement le balayage panoramique pour le retrouver).
+   - PRIORITÉ 4 — move_arm(pan_deg, tilt_deg, scan_room) : pour ajuster manuellement l'angle du bras (pan < 0 GAUCHE, pan > 0 DROITE, tilt < 0 HAUT, tilt > 0 BAS) ou explorer toute la pièce (scan_room=true).
+   - PRIORITÉ 5 — express(gesture, led) & set_tracking(mode) : en mode dialogue, accompagne tes réponses d'un geste + LED en 1 seul appel (nod_yes+yes, shake_no+no, curious_tilt+curious) ou fige/réactive le suivi visage.
 """
 
 ROBOT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
-        "name": "enter_desk_reading_mode",
-        "description": "Passe en mode Lecture de Feuille complet : pivot 180° du bras + inclinaison calibrée vers le bureau + caméra arrière HD/4K + détection automatique de feuille/bureau (0.51x..5x) + centrage + ring-light HiLight + capture HD immédiate.",
+        "name": "look_at_user",
+        "description": "Passe ou revient sur le visage de Zach : bascule en caméra avant 720p, recentre la nacelle sur la pose visage, vérifie réellement avec Apple Vision si le visage est détecté, et lance automatiquement un balayage de recherche si search_if_missing=true et aucun visage n'est visible. Retourne face_detected + photo frontale.",
+        "strict": True,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "search_if_missing": {
+                    "type": "boolean",
+                    "description": "true pour lancer le balayage panoramique automatique si Apple Vision ne voit pas le visage après recentrage (recommandé).",
+                }
+            },
+            "required": ["search_if_missing"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "look_at_desk",
+        "description": "Mode Lecture de Feuille caméra arrière : (1) si pas encore sur le bureau, pivote le bras en boucle fermée IMU vers la pose feuille calibrée + démarre la caméra arrière HD/4K + ring-light HiLight ; (2) détecte la feuille via Apple Vision, la centre et ajuste l'optique ; (3) si déjà sur le bureau, change uniquement le zoom optique / la 4K ou recadre la feuille sans re-pivoter. Retourne sheet_detected + OCR + photo HD 2048px.",
         "strict": True,
         "parameters": {
             "type": "object",
             "properties": {
                 "zoom": {
                     "type": "number",
-                    "description": "Zoom optique souhaité : 0 pour auto-sélection intelligente selon la taille de la feuille (recommandé), 0.51 (ultra grand-angle), 1.0 (classique), 2.0, 3.0 ou 5.0 (téléobjectif optique).",
-                },
-                "auto_target": {
-                    "type": "boolean",
-                    "description": "true pour détecter automatiquement la feuille sur le bureau, la centrer mécaniquement et choisir la meilleure optique.",
+                    "description": "Optique souhaitée : 0 pour auto-sélection intelligente (1x/2x/3x/5x), 0.51 (ultra grand-angle bureau), 1.0 (principal 50MP), 2.0 (optique 2x), 3.0 ou 5.0 (téléobjectif optique).",
                 },
                 "ultra_hd": {
                     "type": "boolean",
-                    "description": "true pour capturer en 4K (3840x2160) pour des notes manuscrites très fines ; false pour 2688x1512 rapide.",
+                    "description": "true pour 4K (3840x2160) sur écriture manuscrite fine ; false pour 2688x1512 rapide.",
                 },
-            },
-            "required": ["zoom", "auto_target", "ultra_hd"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "type": "function",
-        "name": "set_camera_zoom",
-        "description": "Change l'optique / zoom natif de la caméra Pixel 11 Pro (arrière : 0.51x ultra grand-angle, 1.0x principal, 2.0x sans perte, 3.0x/5.0x téléobjectif optique) et capture immédiatement une photo HD.",
-        "strict": True,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "zoom": {
-                    "type": "number",
-                    "description": "Facteur de zoom optique : 0.51, 1.0, 2.0, 3.0, 5.0 (max 10.0).",
-                },
-                "capture_after": {
+                "retarget_sheet": {
                     "type": "boolean",
-                    "description": "true pour renvoyer immédiatement la photo HD prise avec cette nouvelle optique.",
+                    "description": "true pour détecter la feuille et recentrer mécaniquement le bras dessus ; false pour juste changer le zoom sans bouger le bras.",
                 },
             },
-            "required": ["zoom", "capture_after"],
+            "required": ["zoom", "ultra_hd", "retarget_sheet"],
             "additionalProperties": False,
         },
     },
     {
         "type": "function",
-        "name": "return_to_face_mode",
-        "description": "Quitte le mode feuille et revient en mode Dialogue : repasse sur la caméra avant 720p, recentre la nacelle face au visage de Zach, coupe le HiLight et réactive le suivi visage.",
-        "strict": True,
-        "parameters": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "type": "function",
-        "name": "move_gimbal",
-        "description": "Pilote directement le bras mécanique DJI Osmo Mobile 3 en degrés relatifs (gauche/droite/haut/bas), suspend le suivi visage si hold_position=true, et capture la nouvelle vue caméra.",
+        "name": "move_arm",
+        "description": "Pilote librement le bras mécanique DJI Osmo Mobile 3 : soit une rotation relative (pan_deg gauche/droite, tilt_deg haut/bas) en maintenant la position, soit un balayage panoramique complet de la pièce (scan_room=true, renvoie 3 photos gauche/centre/droite).",
         "strict": True,
         "parameters": {
             "type": "object",
             "properties": {
                 "pan_deg": {
                     "type": "number",
-                    "description": "Rotation horizontale en degrés : négatif = GAUCHE (ex: -70), positif = DROITE (ex: +70). Plage : -160 à +160.",
+                    "description": "Rotation horizontale en degrés : négatif = GAUCHE, positif = DROITE (-160 à +160). Ignoré si scan_room=true.",
                 },
                 "tilt_deg": {
                     "type": "number",
-                    "description": "Inclinaison verticale en degrés : négatif = HAUT (ex: -25), positif = BAS (ex: +35). Plage : -60 à +60.",
+                    "description": "Inclinaison verticale en degrés : négatif = HAUT, positif = BAS (-60 à +60). Ignoré si scan_room=true.",
+                },
+                "scan_room": {
+                    "type": "boolean",
+                    "description": "true pour exécuter un balayage panoramique 3 photos (GAUCHE/CENTRE/DROITE) de la pièce.",
                 },
                 "speed_dps": {
                     "type": "number",
-                    "description": "Vitesse de rotation en degrés/seconde (entre 20 et 90, conseillé 50).",
-                },
-                "hold_position": {
-                    "type": "boolean",
-                    "description": "true pour maintenir le bras orienté sur la nouvelle position (met en pause le suivi visage), false pour laisser le suivi visage reprendre après.",
-                },
-                "capture_after": {
-                    "type": "boolean",
-                    "description": "true pour capturer et analyser la nouvelle image caméra juste après le mouvement.",
+                    "description": "Vitesse de rotation en degrés/seconde (25 à 85, conseillé 50).",
                 },
             },
-            "required": ["pan_deg", "tilt_deg", "speed_dps", "hold_position", "capture_after"],
+            "required": ["pan_deg", "tilt_deg", "scan_room", "speed_dps"],
             "additionalProperties": False,
         },
     },
     {
         "type": "function",
-        "name": "scan_room",
-        "description": "Exécute un vrai balayage panoramique physique de la pièce (GAUCHE -> CENTRE -> DROITE) avec le bras mécanique, sans être interrompu par le visage, et renvoie 3 photos panoramiques pour décrire la pièce.",
-        "strict": True,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "span_deg": {
-                    "type": "number",
-                    "description": "Amplitude horizontale totale du balayage en degrés (entre 80 et 220, conseillé 150).",
-                },
-                "speed_dps": {
-                    "type": "number",
-                    "description": "Vitesse de balayage en degrés/seconde (entre 35 et 85, conseillé 55).",
-                },
-                "return_to_center": {
-                    "type": "boolean",
-                    "description": "true pour revenir au centre et reprendre le suivi de Zach après le balayage.",
-                },
-            },
-            "required": ["span_deg", "speed_dps", "return_to_center"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "type": "function",
-        "name": "set_tracking_mode",
-        "description": "Active le suivi automatique du visage (follow_face) ou passe le bras en contrôle libre IA fixe (free_control).",
-        "strict": True,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "mode": {
-                    "type": "string",
-                    "enum": ["follow_face", "free_control"],
-                    "description": "follow_face pour suivre le visage de Zach automatiquement, free_control pour laisser le bras immobile là où l'IA le place.",
-                }
-            },
-            "required": ["mode"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "type": "function",
-        "name": "trigger_gesture",
-        "description": "Exécute un geste physique expressif court sur la nacelle motorisée DJI Osmo Mobile 3.",
+        "name": "express",
+        "description": "Déclenche en un seul appel un geste expressif court de la nacelle et/ou une animation sur l'anneau 8 LEDs RGB HiLight (mode dialogue).",
         "strict": True,
         "parameters": {
             "type": "object",
             "properties": {
                 "gesture": {
                     "type": "string",
-                    "enum": ["nod_yes", "shake_no", "curious_tilt"],
-                    "description": "Geste expressif en dialogue : nod_yes (oui), shake_no (non), curious_tilt (curieux).",
-                }
+                    "enum": ["none", "nod_yes", "shake_no", "curious_tilt"],
+                    "description": "Geste expressif : nod_yes (oui), shake_no (non), curious_tilt (curieux), ou none.",
+                },
+                "led": {
+                    "type": "string",
+                    "enum": ["none", "yes", "no", "curious", "desk", "search", "off"],
+                    "description": "Couleur/animation HiLight : yes (vert), no (rouge), curious (ambre), desk (blanc chaud), search (comète cyan), off, ou none.",
+                },
             },
-            "required": ["gesture"],
+            "required": ["gesture", "led"],
             "additionalProperties": False,
         },
     },
     {
         "type": "function",
-        "name": "set_hilight",
-        "description": "Anime l'anneau 8 LEDs RGB HiLight à l'arrière du Pixel 11 Pro.",
+        "name": "set_tracking",
+        "description": "Contrôle le suivi automatique du visage ou l'orientation physique de la nacelle.",
         "strict": True,
         "parameters": {
             "type": "object",
             "properties": {
-                "effect": {
+                "mode": {
                     "type": "string",
-                    "enum": ["yes", "no", "curious", "desk", "search", "off"],
-                    "description": "Effet lumineux : yes (vert), no (rouge), curious (ambre/violet), desk (blanc chaud feuille), search (comète cyan), off (éteint).",
+                    "enum": ["follow_face", "free_control", "toggle_orientation"],
+                    "description": "follow_face (réactive le suivi visage), free_control (fige le bras), toggle_orientation (Paysage <-> Portrait).",
                 }
             },
-            "required": ["effect"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "type": "function",
-        "name": "control_gimbal",
-        "description": "Pilote une commande matérielle de la nacelle DJI Osmo Mobile 3.",
-        "strict": True,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["recenter", "toggle_orientation"],
-                    "description": "recenter (recentrage matériel Paysage + reprise suivi), toggle_orientation (Paysage <-> Portrait).",
-                }
-            },
-            "required": ["action"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "type": "function",
-        "name": "inspect_camera_hd",
-        "description": "Capture une nouvelle image haute résolution (jusqu'à 2048px) de la caméra Pixel active pour lire précisément du texte manuscrit ou un petit détail.",
-        "strict": True,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "reason": {
-                    "type": "string",
-                    "description": "Ce que tu cherches à lire ou vérifier précisément sur l'image.",
-                }
-            },
-            "required": ["reason"],
+            "required": ["mode"],
             "additionalProperties": False,
         },
     },
@@ -770,8 +667,9 @@ class OpenAILiveBrain:
 
         try:
             robot_ctx = self.on_get_context() if self.on_get_context else ""
-            raw_jpeg = self.on_get_frame(False) if (self.use_vision and self.on_get_frame) else None
             is_desk = "mode_bureau=True" in robot_ctx
+            # When already in desk mode, pass razor-sharp 2048px HD image directly so follow-up reading takes 1 hop (~2s)!
+            raw_jpeg = self.on_get_frame(is_desk) if (self.use_vision and self.on_get_frame) else None
             vision_jpeg = prepare_vision_jpeg(raw_jpeg, high_res=is_desk) if raw_jpeg else None
 
             # Build compact, cache-friendly user input item

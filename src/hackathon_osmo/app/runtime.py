@@ -44,16 +44,18 @@ class StudioRuntime:
         self.camera_bitrate: int = 8_000_000
         self.rotate_deg: int = 0  # Calibrated default Landscape orientation on OM3
         self.mirror: bool = True
+        self.face_pose: dict[str, Any] = {
+            "pitch_deg": 5.3,
+            "pan_roll_deg": 179.3,
+        }
         self.desk_pose: dict[str, Any] = {
             "pitch_deg": 46.0,
-            "roll_deg": -66.3,
-            "yaw_offset_deg": 180.0,
+            "pan_roll_deg": -66.3,
             "width": 2688,
             "height": 1512,
             "bitrate": 16_000_000,
             "default_zoom": 1.0,
         }
-        self._dialogue_yaw_deg: float | None = None
         self._camera_gen: int = 0
         self._frame_ready_event = asyncio.Event()
 
@@ -113,8 +115,12 @@ class StudioRuntime:
             cfg.kd = round(float(cal.get("kd", 3.6)), 1)
             cfg.deadzone = float(cal.get("deadzone", 0.09))
             cfg.max_dps = float(cal.get("max_dps", 55.0))
+            if isinstance(cal.get("face_pose"), dict):
+                self.face_pose.update(cal["face_pose"])
             if isinstance(cal.get("desk_pose"), dict):
                 self.desk_pose.update(cal["desk_pose"])
+                if "pan_roll_deg" not in self.desk_pose and "roll_deg" in self.desk_pose:
+                    self.desk_pose["pan_roll_deg"] = self.desk_pose["roll_deg"]
             self.arbiter.live_motors = True
             self.arbiter.log(
                 "CALIB",
@@ -176,17 +182,45 @@ class StudioRuntime:
         interp = self.arbiter.latest
         att = self._osmo.last_attitude if self._osmo else None
         att_txt = (
-            f"IMU(pitch={att.pitch_deg:+.1f}°,roll={att.roll_deg:+.1f}°,yaw={att.yaw_deg:+.1f}°)"
+            f"IMU(pitch={att.pitch_deg:+.1f}°,pan_roll={att.roll_deg:+.1f}°,land_yaw={att.yaw_deg:+.1f}°)"
             if att
             else "IMU=indispo"
         )
+        sheet_txt = ""
+        if self.arbiter.desk_mode:
+            sh = self._latest_sheet
+            ocr_hint = " | ".join(sh.lines[:5]) if sh.lines else "aucun"
+            sheet_txt = f", sheet_found={sh.found}, ocr_preview=[{ocr_hint}]"
         return (
             f"camera={self.facing} ({self.width}x{self.height} zoom={self.camera_zoom:.2f}x), "
             f"mode_bureau={self.arbiter.desk_mode}, ai_hold={self.arbiter.ai_hold_mode}, "
-            f"visage={interp.face_detected} (x={interp.cx:+.2f},y={interp.cy:+.2f}), "
-            f"etat={interp.state}, moteurs_live={self.arbiter.live_motors}, "
-            f"hilight={self.hilight.current_effect}, {att_txt}"
+            f"face_detected={interp.face_detected} (conf={interp.confidence:.2f}, pos={interp.cx:+.2f},{interp.cy:+.2f}), "
+            f"tracking_state={interp.state}, moteurs_live={self.arbiter.live_motors}, "
+            f"hilight={self.hilight.current_effect}, {att_txt}{sheet_txt}"
         )
+
+    def _save_calibration_key(self, key: str, value: dict[str, Any]) -> None:
+        cal = json.loads(CALIBRATION_FILE.read_text(encoding="utf-8")) if CALIBRATION_FILE.exists() else {}
+        cal[key] = value
+        CALIBRATION_FILE.write_text(json.dumps(cal, indent=2), encoding="utf-8")
+
+    def save_current_face_pose(self) -> dict[str, Any]:
+        """Persist current Osmo IMU attitude as the calibrated dialogue face pose."""
+        att = self._osmo.last_attitude if self._osmo else None
+        if att is None:
+            return {"ok": False, "error": "IMU Osmo indisponible"}
+        self.face_pose["pitch_deg"] = round(att.pitch_deg, 1)
+        self.face_pose["pan_roll_deg"] = round(att.roll_deg, 1)
+        try:
+            self._save_calibration_key("face_pose", self.face_pose)
+            self.arbiter.log(
+                "CALIB",
+                f"Pose visage enregistrée : pan_roll={self.face_pose['pan_roll_deg']:+.1f}°, "
+                f"pitch={self.face_pose['pitch_deg']:+.1f}°",
+            )
+            return {"ok": True, "face_pose": self.face_pose}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
 
     def save_current_desk_pose(self) -> dict[str, Any]:
         """Persist current Osmo IMU attitude as the calibrated desk-reading pose in calibration.json."""
@@ -194,17 +228,13 @@ class StudioRuntime:
         if att is None:
             return {"ok": False, "error": "IMU Osmo indisponible"}
         self.desk_pose["pitch_deg"] = round(att.pitch_deg, 1)
-        self.desk_pose["roll_deg"] = round(att.roll_deg, 1)
-        if self._dialogue_yaw_deg is not None:
-            self.desk_pose["yaw_offset_deg"] = round(angle_diff_deg(att.yaw_deg, self._dialogue_yaw_deg), 1)
+        self.desk_pose["pan_roll_deg"] = round(att.roll_deg, 1)
         try:
-            cal = json.loads(CALIBRATION_FILE.read_text(encoding="utf-8")) if CALIBRATION_FILE.exists() else {}
-            cal["desk_pose"] = self.desk_pose
-            CALIBRATION_FILE.write_text(json.dumps(cal, indent=2), encoding="utf-8")
+            self._save_calibration_key("desk_pose", self.desk_pose)
             self.arbiter.log(
                 "CALIB",
-                f"Pose feuille enregistrée : pitch={self.desk_pose['pitch_deg']:+.1f}°, "
-                f"roll={self.desk_pose['roll_deg']:+.1f}°, yaw_off={self.desk_pose['yaw_offset_deg']:+.1f}°",
+                f"Pose feuille enregistrée : pan_roll={self.desk_pose['pan_roll_deg']:+.1f}°, "
+                f"pitch={self.desk_pose['pitch_deg']:+.1f}°",
             )
             return {"ok": True, "desk_pose": self.desk_pose}
         except Exception as exc:
@@ -254,47 +284,61 @@ class StudioRuntime:
         await self._send_body_speed(0.0, 0.0)
         return self._osmo.last_attitude.pitch_deg
 
-    async def _servo_yaw_to_imu(self, target_yaw_deg: float, timeout_s: float = 4.2) -> float | None:
-        """Closed-loop IMU yaw servo for 180° arm pivot with automatic mechanical endstop bypass."""
+    async def _servo_pan_to_imu(self, target_roll_deg: float, timeout_s: float = 4.2) -> float | None:
+        """Closed-loop IMU horizontal pan servo on OM3's true pan axis (att.roll_deg).
+
+        Auto-probes motor sign for 0.2s so it ALWAYS takes the shortest path in the right direction,
+        and flips cleanly if a mechanical hardstop is encountered.
+        """
         if not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
             return None
-        cur = self._osmo.last_attitude.yaw_deg
-        if abs(angle_diff_deg(target_yaw_deg, cur)) <= 5.0:
-            return cur
+        r0 = self._osmo.last_attitude.roll_deg
+        err0 = angle_diff_deg(target_roll_deg, r0)
+        if abs(err0) <= 4.0:
+            return r0
 
-        # Start turning clockwise; flip direction if mechanical hardstop is hit before reaching 180°
+        # Brief sign probe (0.20s) to guarantee we move TOWARD target_roll_deg, never away!
         direction = 1.0
+        for _ in range(4):
+            await self._send_body_speed(direction * 42.0, 0.0)
+            await asyncio.sleep(0.05)
+        r_probe = self._osmo.last_attitude.roll_deg
+        if abs(angle_diff_deg(target_roll_deg, r_probe)) > abs(err0) + 0.5:
+            direction = -direction
+
         stall_since: float | None = None
-        last_yaw = cur
+        last_roll = r_probe
         flipped = False
         deadline = time.monotonic() + timeout_s
 
         while time.monotonic() < deadline and self.osmo_connected:
-            cur = self._osmo.last_attitude.yaw_deg
-            err = abs(angle_diff_deg(target_yaw_deg, cur))
-            if err <= 4.5:
+            cur = self._osmo.last_attitude.roll_deg
+            err = angle_diff_deg(target_roll_deg, cur)
+            if abs(err) <= 3.5:
                 break
 
-            spd = max(25.0, min(88.0, err * 2.8))
-            await self._send_body_speed(direction * spd, 0.0)
+            # Keep sign consistent with probe relation (if we overshoot past target, flip smoothly)
+            same_side = (err > 0) == (err0 > 0)
+            cmd_dir = direction if same_side else -direction
+            spd = max(22.0, min(82.0, abs(err) * 2.5))
+            await self._send_body_speed(cmd_dir * spd, 0.0)
             await asyncio.sleep(0.05)
 
-            delta = abs(angle_diff_deg(cur, last_yaw))
-            if delta < 0.8 and spd >= 45.0:
+            delta = abs(angle_diff_deg(cur, last_roll))
+            if delta < 0.8 and spd >= 42.0:
                 if stall_since is None:
                     stall_since = time.monotonic()
-                elif time.monotonic() - stall_since > 0.35 and not flipped:
-                    # Mechanical limit reached on this side -> reverse and swing around the open side!
+                elif time.monotonic() - stall_since > 0.38 and not flipped:
                     direction = -direction
                     flipped = True
                     stall_since = None
-                    self.arbiter.log("ARM", "Butée mécanique Yaw détectée → contournement par l'autre sens")
+                    self.arbiter.log("ARM", "Butée mécanique Pan détectée → contournement par l'autre côté")
             else:
                 stall_since = None
-            last_yaw = cur
+            last_roll = cur
 
         await self._send_body_speed(0.0, 0.0)
-        return self._osmo.last_attitude.yaw_deg
+        return self._osmo.last_attitude.roll_deg
 
     async def configure_camera(
         self,
@@ -378,51 +422,57 @@ class StudioRuntime:
         auto_target: bool = True,
         ultra_hd: bool = False,
     ) -> dict[str, Any]:
-        """Full Desk Reading transition:
-        1. 180° Yaw pivot + IMU pitch to calibrated desk pose (+46.0°) in parallel with rear HD/4K startup
-        2. Apple Vision sheet/text detection on the desk surface (falls back to 0.51x ultra-wide if not visible)
-        3. Auto-centers the mechanical arm on the detected sheet and selects optimal optical zoom (1x/2x/3x/5x)
-        4. Returns razor-sharp HD image (up to 2048px) + pre-extracted OCR lines to gpt-6.2-astra!
+        """Full Desk Reading transition (connected to IMU pan/pitch + Apple Vision Sheet):
+        1. If not already on desk: closed-loop IMU servo on true pan (roll_deg) + pitch_deg in parallel with rear HD/4K startup
+        2. If already on desk: zero pivot, zero camera restart unless zoom or 4K actually changed!
+        3. Apple Vision sheet/text detection -> mechanical centering -> smart optical zoom (0.51x..5x)
+        4. Returns razor-sharp HD image (up to 2048px) + pre-extracted OCR lines.
         """
         target_pitch = float(self.desk_pose.get("pitch_deg", 46.0))
-        yaw_offset = float(self.desk_pose.get("yaw_offset_deg", 180.0))
+        target_pan_roll = float(self.desk_pose.get("pan_roll_deg", self.desk_pose.get("roll_deg", -66.3)))
         req_w, req_h = (3840, 2160) if ultra_hd else (
             int(self.desk_pose.get("width", 2688)),
             int(self.desk_pose.get("height", 1512)),
         )
-        initial_zoom = float(zoom) if zoom is not None else float(self.desk_pose.get("default_zoom", 1.0))
 
         if not self.arbiter.live_motors:
             self.arbiter.live_motors = True
 
         self.arbiter.desk_mode = True
         self.arbiter.ai_hold_mode = True
-        if self.hilight.connected:
-            self.hilight.start_reaction("sheet_search")
 
         att = self._osmo.last_attitude if (self._osmo and self.osmo_connected) else None
-        already_on_desk = self.facing == "back" and att is not None and abs(att.pitch_deg - target_pitch) < 16.0
+        already_on_desk = (
+            self.facing == "back"
+            and att is not None
+            and abs(att.pitch_deg - target_pitch) < 18.0
+            and abs(angle_diff_deg(target_pan_roll, att.roll_deg)) < 45.0
+        )
+
+        # Preserve current zoom when already on desk and caller asks for zoom=None (0)
+        desired_zoom = float(zoom) if zoom is not None else (
+            self.camera_zoom if already_on_desk else float(self.desk_pose.get("default_zoom", 1.0))
+        )
+
+        if not already_on_desk and self.hilight.connected:
+            self.hilight.start_reaction("sheet_search")
 
         async def _pivot_arm() -> tuple[float | None, float | None]:
             if already_on_desk or not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
-                return (att.yaw_deg if att else None, att.pitch_deg if att else None)
-
-            if self._dialogue_yaw_deg is None:
-                self._dialogue_yaw_deg = self._osmo.last_attitude.yaw_deg
-            target_yaw = wrap_angle_deg(self._dialogue_yaw_deg + yaw_offset)
+                return (att.roll_deg if att else None, att.pitch_deg if att else None)
 
             self._hw_busy_until = time.monotonic() + 8.5
             try:
                 self.arbiter.log(
                     "ARM",
-                    f"Pivot 180° mode feuille (Yaw → {target_yaw:+.0f}°, Pitch → {target_pitch:+.1f}°)",
+                    f"Pivot IMU mode feuille (Pan/Roll → {target_pan_roll:+.1f}°, Pitch → {target_pitch:+.1f}°)",
                 )
                 if self._osmo.is_landscape() is False:
                     await self._osmo.send_toggle_orientation()
                     await asyncio.sleep(1.0)
-                final_yaw = await self._servo_yaw_to_imu(target_yaw)
+                final_pan = await self._servo_pan_to_imu(target_pan_roll)
                 final_pitch = await self._servo_pitch_to_imu(target_pitch)
-                return final_yaw, final_pitch
+                return final_pan, final_pitch
             finally:
                 await self._send_body_speed(0.0, 0.0)
                 self._hw_busy_until = 0.0
@@ -430,7 +480,7 @@ class StudioRuntime:
         cam_task = asyncio.create_task(
             self.configure_camera(
                 facing="back",
-                zoom=initial_zoom,
+                zoom=desired_zoom,
                 width=req_w,
                 height=req_h,
                 bitrate=20_000_000 if ultra_hd else int(self.desk_pose.get("bitrate", 16_000_000)),
@@ -438,9 +488,11 @@ class StudioRuntime:
             )
         )
         arm_task = asyncio.create_task(_pivot_arm())
-        cam_ok, (final_yaw, final_pitch) = await asyncio.gather(cam_task, arm_task)
+        cam_ok, (final_pan, final_pitch) = await asyncio.gather(cam_task, arm_task)
 
-        await asyncio.sleep(0.28)
+        if not already_on_desk:
+            await asyncio.sleep(0.25)
+
         sheet = SheetDetection()
         auto_zoom_applied = self.camera_zoom
 
@@ -463,7 +515,7 @@ class StudioRuntime:
                 err_y = sheet.cy - 0.5
                 fov_h = 65.0 / max(0.5, self.camera_zoom)
                 fov_v = 40.0 / max(0.5, self.camera_zoom)
-                if abs(err_x) > 0.11 or abs(err_y) > 0.11:
+                if abs(err_x) > 0.12 or abs(err_y) > 0.12:
                     pan_corr = max(-35.0, min(35.0, err_x * fov_h * 0.75))
                     tilt_corr = max(-22.0, min(22.0, err_y * fov_v * 0.75))
                     self.arbiter.log(
@@ -475,10 +527,8 @@ class StudioRuntime:
 
                 # 2. Automatic optical lens selection if zoom was not explicitly pinned
                 if zoom is None:
-                    # Target sheet filling ~60-70% of the frame width/height for razor-sharp OCR
                     span = max(sheet.w, sheet.h, 0.12)
                     desired_z = self.camera_zoom * (0.62 / span)
-                    # Snap to clean Pixel 11 Pro optical/sensor-crop steps: 1.0x, 2.0x, 3.0x, 5.0x
                     if desired_z >= 3.8:
                         chosen_z = 5.0
                     elif desired_z >= 2.4:
@@ -493,7 +543,7 @@ class StudioRuntime:
                             f"Auto-zoom optique sur la feuille : {self.camera_zoom:.2f}x → {chosen_z:.1f}x",
                         )
                         await self.configure_camera(facing="back", zoom=chosen_z, width=req_w, height=req_h, wait_frame=True)
-                        await asyncio.sleep(0.28)
+                        await asyncio.sleep(0.25)
                         auto_zoom_applied = self.camera_zoom
                         if self._latest_raw_bgr is not None:
                             sheet = await asyncio.to_thread(self._detect_sheet_sync, self._latest_raw_bgr)
@@ -513,7 +563,7 @@ class StudioRuntime:
             "sheet_detected": sheet.found,
             "sheet_has_text": sheet.has_text,
             "sheet_ocr_preview": sheet.lines[:8],
-            "imu_yaw": round(att_now.yaw_deg, 1) if att_now else (round(final_yaw, 1) if final_yaw is not None else None),
+            "imu_pan_roll": round(att_now.roll_deg, 1) if att_now else (round(final_pan, 1) if final_pan is not None else None),
             "imu_pitch": round(att_now.pitch_deg, 1) if att_now else (round(final_pitch, 1) if final_pitch is not None else None),
         }
         if jpeg_hd:
@@ -548,190 +598,207 @@ class StudioRuntime:
                 ]
         return res
 
-    async def return_to_face_mode(self) -> dict[str, Any]:
-        """Return from Desk Reading mode to Dialogue mode (front 720p camera, recenter to face, tracking ON)."""
-        self.arbiter.log("ARM", "Retour en mode Dialogue (caméra avant + recentrage visage)")
+    async def return_to_face_mode(self, *, search_if_missing: bool = True) -> dict[str, Any]:
+        """Closed-loop return to Dialogue mode synchronized with Apple Vision Face & Search FSM.
+
+        1. Switch to front 720p camera + move to calibrated face pose (or recenter Landscape) in parallel
+        2. Reset stale lost-face timers so FSM never triggers a spurious search
+        3. Verify real Apple Vision face_detected; if missing and search_if_missing=True, run panoramic search until locked!
+        4. Return sensor ground truth + front frame so LLM NEVER hallucinates seeing the user.
+        """
+        self.arbiter.log("ARM", "Retour en mode Dialogue (caméra avant + pose visage + vérif Apple Vision)")
         if self.hilight.connected:
             self.hilight.start_reaction("off")
+
+        async def _return_arm() -> None:
+            if not self._osmo or not self.osmo_connected:
+                return
+            await self.recenter_landscape()
+            # Fine-align to calibrated face_pose pan_roll/pitch if recorded
+            if self._osmo.last_attitude is not None and "pan_roll_deg" in self.face_pose:
+                target_pan = float(self.face_pose["pan_roll_deg"])
+                target_pitch = float(self.face_pose.get("pitch_deg", 5.0))
+                if abs(angle_diff_deg(target_pan, self._osmo.last_attitude.roll_deg)) > 15.0:
+                    self._hw_busy_until = time.monotonic() + 5.0
+                    try:
+                        await self._servo_pan_to_imu(target_pan, timeout_s=3.0)
+                        await self._servo_pitch_to_imu(target_pitch, timeout_s=1.8)
+                    finally:
+                        await self._send_body_speed(0.0, 0.0)
+                        self._hw_busy_until = 0.0
 
         cam_task = asyncio.create_task(
             self.configure_camera(facing="front", zoom=1.0, width=1280, height=720, bitrate=8_000_000, wait_frame=True)
         )
-        rec_task = asyncio.create_task(self.recenter_landscape())
-        await asyncio.gather(cam_task, rec_task)
+        arm_task = asyncio.create_task(_return_arm())
+        await asyncio.gather(cam_task, arm_task)
 
+        # Reset stale timers BEFORE re-enabling face tracking so FSM never fires a bogus immediate search!
+        self.arbiter.reset_face_loss_timers()
         self.arbiter.desk_mode = False
         self.arbiter.ai_hold_mode = False
-        self._dialogue_yaw_deg = None
-        return {"ok": True, "mode": "dialogue_face", "facing": "front", "zoom": 1.0}
+
+        # Wait up to 1.0s for Apple Vision to detect the user's face
+        found = False
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if self.arbiter.latest.face_detected:
+                found = True
+                break
+            await asyncio.sleep(0.1)
+
+        searched = False
+        if not found and search_if_missing and self.osmo_connected:
+            searched = True
+            self.arbiter.log("SEARCH", "Visage non détecté après recentrage → balayage panoramique connecté")
+            self.arbiter.trigger_search_now()
+            search_deadline = time.monotonic() + 5.5
+            while time.monotonic() < search_deadline:
+                if self.arbiter.latest.face_detected:
+                    found = True
+                    await asyncio.sleep(0.25)  # let PID settle on face
+                    break
+                await asyncio.sleep(0.15)
+
+        interp = self.arbiter.latest
+        jpeg = self._get_latest_frame_jpeg(high_res=False)
+        res: dict[str, Any] = {
+            "ok": True,
+            "mode": "dialogue_face",
+            "facing": "front",
+            "face_detected": bool(interp.face_detected),
+            "face_confidence": round(interp.confidence, 2),
+            "tracking_state": interp.state,
+            "searched_for_face": searched,
+        }
+        if jpeg:
+            status_lbl = "VISAGE VERROUILLÉ" if interp.face_detected else "AUCUN VISAGE DÉTECTÉ"
+            res["_images"] = [{"label": f"Caméra avant ({status_lbl})", "jpeg": jpeg, "detail": "low"}]
+        return res
 
     async def execute_robot_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Native OpenAI Responses tool executor for DJI Osmo Mobile 3 + Pixel 11 Pro HiLight/Camera."""
-        if name == "enter_desk_reading_mode":
+        """Unified 5-tool executor connected to Apple Vision (Face & Sheet) + IMU + DJI Osmo + HiLight."""
+        # --- 1. look_at_user ---
+        if name in ("look_at_user", "return_to_face_mode"):
+            return await self.return_to_face_mode(
+                search_if_missing=bool(args.get("search_if_missing", True))
+            )
+
+        # --- 2. look_at_desk ---
+        if name in ("look_at_desk", "enter_desk_reading_mode"):
             z_raw = args.get("zoom")
             zoom = float(z_raw) if (z_raw is not None and float(z_raw) > 0) else None
-            auto_target = bool(args.get("auto_target", True))
+            retarget = bool(args.get("retarget_sheet", args.get("auto_target", True)))
             ultra_hd = bool(args.get("ultra_hd", False))
             return await self.enter_desk_reading_mode(
                 zoom=zoom,
-                auto_target=auto_target,
+                auto_target=retarget,
                 ultra_hd=ultra_hd,
             )
 
-        if name == "set_camera_zoom":
-            zoom = float(args.get("zoom", 1.0))
-            capture_after = bool(args.get("capture_after", True))
-            return await self.set_camera_zoom(zoom=zoom, capture_after=capture_after)
-
-        if name == "return_to_face_mode":
-            return await self.return_to_face_mode()
-
-        if name == "move_gimbal":
+        # --- 3. move_arm (relative pan/tilt OR panoramic 3-photo room scan) ---
+        if name in ("move_arm", "move_gimbal", "scan_room"):
             if not self.osmo_connected:
                 return {"ok": False, "error": "Nacelle DJI Osmo non connectée"}
             if not self.arbiter.live_motors:
                 self.arbiter.live_motors = True
-                self.arbiter.log("ARM", "Moteurs activés automatiquement pour mouvement IA")
+
+            is_scan = bool(args.get("scan_room", name == "scan_room"))
+            speed_dps = max(25.0, min(85.0, float(args.get("speed_dps", 52.0))))
+
+            if is_scan:
+                span_deg = max(80.0, min(220.0, float(args.get("span_deg", 150.0))))
+                half = span_deg / 2.0
+                self.arbiter.ai_hold_mode = True
+                if self.hilight.connected:
+                    self.hilight.start_reaction("search")
+                self.arbiter.log("ARM", f"Balayage panoramique IA ({span_deg:.0f}° @ {speed_dps:.0f}°/s)")
+
+                captures: list[dict[str, Any]] = []
+                await self.arbiter.move_relative_deg(-half, 0.0, speed_dps, hold_after=True)
+                await asyncio.sleep(0.28)
+                if (j := self._get_latest_frame_jpeg(high_res=False)):
+                    captures.append({"label": f"GAUCHE (-{half:.0f}°)", "jpeg": j, "detail": "low"})
+
+                await self.arbiter.move_relative_deg(+half, 0.0, speed_dps, hold_after=True)
+                await asyncio.sleep(0.22)
+                if (j := self._get_latest_frame_jpeg(high_res=False)):
+                    captures.append({"label": "CENTRE (0°)", "jpeg": j, "detail": "low"})
+
+                await self.arbiter.move_relative_deg(+half, 0.0, speed_dps, hold_after=True)
+                await asyncio.sleep(0.28)
+                if (j := self._get_latest_frame_jpeg(high_res=False)):
+                    captures.append({"label": f"DROITE (+{half:.0f}°)", "jpeg": j, "detail": "low"})
+
+                await self.arbiter.move_relative_deg(-half, 0.0, speed_dps, hold_after=False)
+                self.arbiter.reset_face_loss_timers()
+                self.arbiter.ai_hold_mode = False
+                if self.hilight.connected:
+                    self.hilight.start_reaction("found")
+                return {
+                    "ok": True,
+                    "scanned_span_deg": span_deg,
+                    "views_captured": len(captures),
+                    "face_detected_after": self.arbiter.latest.face_detected,
+                    "_images": captures,
+                }
+
             pan_deg = float(args.get("pan_deg", 0.0))
             tilt_deg = float(args.get("tilt_deg", 0.0))
-            speed_dps = float(args.get("speed_dps", 50.0))
-            hold_pos = bool(args.get("hold_position", True))
-            capture_after = bool(args.get("capture_after", True))
-
             pan_done, tilt_done, dur_s = await self.arbiter.move_relative_deg(
                 pan_deg=pan_deg,
                 tilt_deg=tilt_deg,
                 speed_dps=speed_dps,
-                hold_after=hold_pos,
+                hold_after=True,
             )
+            await asyncio.sleep(0.25)
+            is_desk = self.facing == "back"
+            jpeg = self._get_latest_frame_jpeg(high_res=is_desk)
             res: dict[str, Any] = {
                 "ok": True,
                 "moved_pan_deg": pan_done,
                 "moved_tilt_deg": tilt_done,
                 "duration_s": dur_s,
-                "holding_position": hold_pos,
+                "face_detected": self.arbiter.latest.face_detected,
             }
-            if capture_after:
-                await asyncio.sleep(0.25)
-                is_desk = self.facing == "back"
-                jpeg = self._get_latest_frame_jpeg(high_res=is_desk)
-                if jpeg:
-                    res["_images"] = [
-                        {
-                            "label": f"Vue après rotation bras (pan={pan_done:+.0f}°, tilt={tilt_done:+.0f}°)",
-                            "jpeg": jpeg,
-                            "detail": "high" if is_desk else "low",
-                        }
-                    ]
+            if jpeg:
+                res["_images"] = [
+                    {
+                        "label": f"Vue après rotation bras (pan={pan_done:+.0f}°, tilt={tilt_done:+.0f}°)",
+                        "jpeg": jpeg,
+                        "detail": "high" if is_desk else "low",
+                    }
+                ]
             return res
 
-        if name == "scan_room":
-            if not self.osmo_connected:
-                return {"ok": False, "error": "Nacelle DJI Osmo non connectée"}
-            if not self.arbiter.live_motors:
-                self.arbiter.live_motors = True
-            span_deg = max(80.0, min(220.0, float(args.get("span_deg", 150.0))))
-            speed_dps = max(35.0, min(85.0, float(args.get("speed_dps", 55.0))))
-            return_center = bool(args.get("return_to_center", True))
-            half = span_deg / 2.0
+        # --- 4. express (combined gesture + HiLight LED in 1 single tool call!) ---
+        if name == "express":
+            gesture = str(args.get("gesture", "none"))
+            led = str(args.get("led", "none"))
+            if gesture != "none" and gesture in GESTURES:
+                self.arbiter.trigger_gesture(gesture)
+            if led != "none" and self.hilight.connected:
+                self.hilight.start_reaction(led)
+                self.arbiter.log("HILIGHT", f"Outil IA → LED HiLight : {led}")
+            return {"ok": True, "gesture": gesture, "led": led}
 
-            self.arbiter.ai_hold_mode = True
-            if self.hilight.connected:
-                self.hilight.start_reaction("search")
-            self.arbiter.log("ARM", f"Balayage panoramique IA ({span_deg:.0f}° @ {speed_dps:.0f}°/s)")
-
-            captures: list[dict[str, Any]] = []
-            # 1. Sweep LEFT
-            await self.arbiter.move_relative_deg(-half, 0.0, speed_dps, hold_after=True)
-            await asyncio.sleep(0.28)
-            j_left = self._get_latest_frame_jpeg(high_res=False)
-            if j_left:
-                captures.append({"label": f"GAUCHE (-{half:.0f}°)", "jpeg": j_left, "detail": "low"})
-
-            # 2. Sweep CENTER
-            await self.arbiter.move_relative_deg(+half, 0.0, speed_dps, hold_after=True)
-            await asyncio.sleep(0.22)
-            j_mid = self._get_latest_frame_jpeg(high_res=False)
-            if j_mid:
-                captures.append({"label": "CENTRE (0°)", "jpeg": j_mid, "detail": "low"})
-
-            # 3. Sweep RIGHT
-            await self.arbiter.move_relative_deg(+half, 0.0, speed_dps, hold_after=True)
-            await asyncio.sleep(0.28)
-            j_right = self._get_latest_frame_jpeg(high_res=False)
-            if j_right:
-                captures.append({"label": f"DROITE (+{half:.0f}°)", "jpeg": j_right, "detail": "low"})
-
-            # 4. Return to center if requested
-            if return_center:
-                await self.arbiter.move_relative_deg(-half, 0.0, speed_dps, hold_after=False)
-                self.arbiter.ai_hold_mode = False
-
-            if self.hilight.connected:
-                self.hilight.start_reaction("found")
-
-            return {
-                "ok": True,
-                "scanned_span_deg": span_deg,
-                "views_captured": len(captures),
-                "returned_to_center": return_center,
-                "_images": captures,
-            }
-
-        if name == "set_tracking_mode":
+        # --- 5. set_tracking ---
+        if name in ("set_tracking", "set_tracking_mode"):
             mode = str(args.get("mode", "follow_face"))
             if mode == "follow_face":
+                self.arbiter.reset_face_loss_timers()
                 self.arbiter.ai_hold_mode = False
                 self.arbiter.desk_mode = False
                 self.arbiter.log("ARM", "Suivi visage automatique réactivé par l'IA")
-                return {"ok": True, "mode": "follow_face"}
+                return {"ok": True, "mode": "follow_face", "face_detected": self.arbiter.latest.face_detected}
             if mode == "free_control":
                 self.arbiter.ai_hold_mode = True
                 self.arbiter.log("ARM", "Mode contrôle libre IA activé (suivi visage en pause)")
                 return {"ok": True, "mode": "free_control"}
-            return {"ok": False, "error": f"Mode inconnu: {mode}"}
-
-        if name == "trigger_gesture":
-            gesture = str(args.get("gesture", ""))
-            if gesture not in GESTURES:
-                return {"ok": False, "error": f"Geste inconnu: {gesture}"}
-            if gesture == "look_up":
-                self.arbiter.ai_hold_mode = False
-            self.arbiter.trigger_gesture(gesture)
-            if gesture == "look_desk" and self.facing != "back":
-                asyncio.create_task(self.switch_camera("back"))
-            elif gesture == "look_up" and self.facing != "front":
-                asyncio.create_task(self.switch_camera("front"))
-            return {"ok": True, "gesture": gesture}
-
-        if name == "set_hilight":
-            effect = str(args.get("effect", "off"))
-            if self.hilight.connected:
-                self.hilight.start_reaction(effect)
-                self.arbiter.log("HILIGHT", f"Outil IA → LED HiLight : {effect}")
-                return {"ok": True, "effect": effect}
-            return {"ok": False, "error": "HiLight non connecté"}
-
-        if name == "control_gimbal":
-            action = str(args.get("action", ""))
-            if action == "recenter":
-                self.arbiter.ai_hold_mode = False
-                asyncio.create_task(self.recenter_landscape())
-                return {"ok": True, "action": "recenter"}
-            if action == "search":
-                self.arbiter.trigger_search_now()
-                return {"ok": True, "action": "search"}
-            if action == "toggle_orientation":
+            if mode == "toggle_orientation":
                 asyncio.create_task(self.toggle_orientation())
-                return {"ok": True, "action": "toggle_orientation"}
-            return {"ok": False, "error": f"Action nacelle inconnue: {action}"}
-
-        if name == "switch_camera":
-            facing = str(args.get("facing", "front"))
-            if facing not in ("front", "back"):
-                return {"ok": False, "error": f"Caméra invalide: {facing}"}
-            asyncio.create_task(self.switch_camera(facing))
-            return {"ok": True, "facing": facing}
+                return {"ok": True, "mode": "toggle_orientation"}
+            return {"ok": False, "error": f"Mode inconnu: {mode}"}
 
         return {"ok": False, "error": f"Outil inconnu: {name}"}
 

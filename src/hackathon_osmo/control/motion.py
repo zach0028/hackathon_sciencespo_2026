@@ -528,6 +528,16 @@ class MotionArbiter:
         if self.on_light_reaction:
             self.on_light_reaction("search")
 
+    def reset_face_loss_timers(self) -> None:
+        """Clear stale lost-face / search FSM state (e.g. when returning from desk mode)."""
+        self._had_face = False
+        self._search_active = False
+        self._home_requested = False
+        self._returned_home = False
+        self._last_face_t = time.monotonic()
+        self._fx.reset()
+        self._fy.reset()
+
     def trigger_gesture(
         self,
         gesture_key: str,

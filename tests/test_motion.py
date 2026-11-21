@@ -172,3 +172,18 @@ def test_angle_wrap_and_shortest_diff() -> None:
     assert angle_diff_deg(-170.0, 170.0) == pytest.approx(20.0)
 
 
+def test_reset_face_loss_timers_prevents_spurious_search_after_desk_mode() -> None:
+    arb = MotionArbiter()
+    # Had face a long time ago, then went to desk mode
+    arb.update_vision([FaceBox(x=0.4, y=0.4, w=0.2, h=0.2, confidence=0.95)], vision_ms=10.0, now=1.0)
+    arb.desk_mode = True
+    arb.update_vision([], vision_ms=5.0, now=50.0)
+
+    # Exiting desk mode after calling reset_face_loss_timers must stay IDLE_HOME, not jump to SEARCHING
+    arb.reset_face_loss_timers()
+    arb.desk_mode = False
+    interp = arb.update_vision([], vision_ms=10.0, now=50.1)
+    assert interp.state == "IDLE_HOME"
+
+
+
