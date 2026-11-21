@@ -14,6 +14,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import time
 import uuid
 from collections import deque
@@ -107,7 +108,8 @@ Core Tutoring & Operating Rules:
      * Paper is ALWAYS downward on the desk, never on the ceiling.
    - PRIORITY 4 — look_at_user(search_if_missing): return to Zach when NOT showing a whiteboard card (automatically reactivates face tracking — never follow with set_tracking!).
    - PRIORITY 5 — move_arm(pan_deg, tilt_deg, scan_room): manual arm pan/tilt or 3-view room scan.
-   - PRIORITY 6 — express(gesture, led) & set_tracking(mode): warm tutor gestures (nod_yes, curious_tilt) + HiLight LEDs in face mode.
+   - PRIORITY 6 — express(gesture, led) & set_tracking(mode): warm tutor & audience micro-interactions (nod_yes, shake_no, curious_tilt) + HiLight LEDs in face mode.
+     * AUDIENCE & SOCIAL RULE: Whenever you introduce yourself to the room or interact with a guest/audience member (e.g. "say hi to Jules on my left"), ALWAYS keep Face Mode (mode_bureau=False, front screen showing your 3D character face toward them!). NEVER call look_at_desk to look at people — instead clear any card with show_on_screen(face_user=true, mode="clear", ...), pan toward them with move_arm(pan_deg=...), and pair with express(gesture="nod_yes"|"curious_tilt", led="yes"|"curious")!
    - PRIORITY 7 — remember(action, category, content, query): persistent local SQLite tutor memory (callable IN PARALLEL!). Remember Zach's subjects, exam dates, mastered topics, recurring mistakes, and study preferences.
 """
 
@@ -359,6 +361,39 @@ def extract_responses_text_and_calls(payload: dict[str, Any]) -> tuple[str, list
     return " ".join(text_parts).strip(), calls
 
 
+_RE_NO_CUE = re.compile(
+    r"^\s*(?:no\b|nope\b|not quite\b|not exactly\b|actually,\s*no|careful\b|watch out\b|wait,\s*not\b)",
+    re.IGNORECASE,
+)
+_RE_YES_CUE = re.compile(
+    r"^\s*(?:yes\b|yeah\b|exactly\b|spot on\b|correct\b|right\b|of course\b|sure\b|absolutely\b|"
+    r"great job\b|well done\b|nice work\b|hi\b|hello\b|hey\b|welcome\b)|"
+    r"\b(?:nice to meet you|you got it|well done|spot on)\b",
+    re.IGNORECASE,
+)
+_RE_CURIOUS_CUE = re.compile(
+    r"\b(?:interesting|curious|wonder|what do you think|would you rather|which way|shall we|ready to try)\b",
+    re.IGNORECASE,
+)
+
+
+def infer_micro_expression(text: str, *, final: bool = False) -> tuple[str, str] | None:
+    """Infer an organic (gesture, led) micro-expression directly from Osmo's spoken English text (<0.1ms).
+
+    Returns ("nod_yes", "yes") | ("shake_no", "no") | ("curious_tilt", "curious") | None.
+    """
+    clean = (text or "").strip()
+    if len(clean) < 3:
+        return None
+    if _RE_NO_CUE.search(clean):
+        return ("shake_no", "no")
+    if _RE_YES_CUE.search(clean):
+        return ("nod_yes", "yes")
+    if _RE_CURIOUS_CUE.search(clean) or (final and "?" in clean):
+        return ("curious_tilt", "curious")
+    return None
+
+
 def extract_live_session_info(payload: dict[str, Any]) -> tuple[str, str]:
     """Extract (session_id, sdp_answer) robustly from POST /v1/live/sessions response."""
     session_obj = payload.get("session") if isinstance(payload.get("session"), dict) else {}
@@ -385,6 +420,7 @@ ContextProvider = Callable[[], str]
 LogCallback = Callable[[str, str], None]
 LightCallback = Callable[[str], None]
 PrewarmCallback = Callable[[str], None]
+AutoExpressCallback = Callable[[str, str], None]
 
 
 @dataclass
@@ -405,6 +441,7 @@ class OpenAILiveBrain:
     on_log: LogCallback | None = None
     on_light: LightCallback | None = None
     on_prewarm: PrewarmCallback | None = None
+    on_auto_express: AutoExpressCallback | None = None
     recorder: SessionRecorder | None = None
     memory: OsmoMemoryStore | None = None
 
@@ -432,6 +469,7 @@ class OpenAILiveBrain:
     _previous_response_id: str | None = None
     _user_transcript_buf: str = ""
     _bot_transcript_buf: str = ""
+    _bot_expr_fired: bool = False
     _recent_turns: deque[dict[str, str]] = field(default_factory=lambda: deque(maxlen=10))
     transcript: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=40))
 
@@ -687,6 +725,12 @@ class OpenAILiveBrain:
                 self.speaking = True
                 self._set_micro("speaking", pulse=True, tool_intent="")
                 self._bot_transcript_buf += delta
+                # Real-time zero-latency micro-expression (nod / shake / curious tilt) as Osmo begins speaking!
+                if not self._bot_expr_fired and self.on_auto_express and len(self._bot_transcript_buf) >= 5:
+                    expr = infer_micro_expression(self._bot_transcript_buf, final=False)
+                    if expr is not None:
+                        self._bot_expr_fired = True
+                        self.on_auto_express(expr[0], expr[1])
 
         elif etype in (
             "session.output_transcript.done",
@@ -698,8 +742,14 @@ class OpenAILiveBrain:
             if not self.busy:
                 self._set_micro("idle", tool_intent="")
             final = str(event.get("transcript") or event.get("text") or self._bot_transcript_buf).strip()
+            already_fired = self._bot_expr_fired
             self._bot_transcript_buf = ""
+            self._bot_expr_fired = False
             if final:
+                if not already_fired and self.on_auto_express:
+                    expr = infer_micro_expression(final, final=True)
+                    if expr is not None:
+                        self.on_auto_express(expr[0], expr[1])
                 self._recent_turns.append({"role": "assistant", "content": final})
                 self._append_ui_transcript(user=None, reply=final, source="live")
                 if self.recorder:

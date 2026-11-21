@@ -46,9 +46,17 @@
   const btnDemoToggle = document.getElementById("btn-demo-toggle");
   const btnFs = document.getElementById("btn-fs");
 
-  // --- Screen Wake Lock + Haptics ---
+  // --- Screen Wake Lock + Landscape Orientation Lock + Haptics ---
   let wakeLock = null;
+  function lockLandscape() {
+    try {
+      if (screen.orientation && screen.orientation.lock) {
+        screen.orientation.lock("landscape").catch(() => {});
+      }
+    } catch (_) {}
+  }
   async function requestWakeLock() {
+    lockLandscape();
     try {
       if ("wakeLock" in navigator && !wakeLock) {
         wakeLock = await navigator.wakeLock.request("screen");
@@ -59,6 +67,7 @@
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") requestWakeLock();
   });
+  lockLandscape();
 
   function haptic(pattern) {
     try {

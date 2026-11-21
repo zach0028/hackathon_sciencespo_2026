@@ -13,6 +13,7 @@ from hackathon_osmo.ai.live_brain import (
     OpenAILiveBrain,
     extract_live_session_info,
     extract_responses_text_and_calls,
+    infer_micro_expression,
     prepare_vision_jpeg,
 )
 
@@ -225,6 +226,31 @@ def test_sse_stream_triggers_speculative_hardware_prewarm() -> None:
         "reading_sheet",
     )
     assert prewarms == ["desk", "face"]
+
+
+def test_infer_micro_expression_and_realtime_sideband_auto_express() -> None:
+    assert infer_micro_expression("Yes, exactly! Great job.") == ("nod_yes", "yes")
+    assert infer_micro_expression("Hello everyone! Nice to meet you.") == ("nod_yes", "yes")
+    assert infer_micro_expression("Not quite, watch the minus sign.") == ("shake_no", "no")
+    assert infer_micro_expression("What do you think we should try next?", final=True) == ("curious_tilt", "curious")
+    assert infer_micro_expression("Heat flows from warm skin to fabric.", final=True) is None
+
+    fired: list[tuple[str, str]] = []
+    brain = OpenAILiveBrain(on_auto_express=lambda g, l: fired.append((g, l)))
+
+    async def _run() -> None:
+        await brain._handle_sideband_event({"type": "session.output_transcript.delta", "delta": "Hi, Jules! "})
+        await brain._handle_sideband_event({"type": "session.output_transcript.delta", "delta": "Nice to meet you."})
+        await brain._handle_sideband_event({"type": "session.output_transcript.done"})
+        assert fired == [("nod_yes", "yes")]
+
+        # Next utterance: question ending with '?' fires curious_tilt on done!
+        await brain._handle_sideband_event({"type": "session.output_transcript.delta", "delta": "Shall we try Q2?"})
+        await brain._handle_sideband_event({"type": "session.output_transcript.done"})
+        assert fired == [("nod_yes", "yes"), ("curious_tilt", "curious")]
+
+    asyncio.run(_run())
+
 
 
 

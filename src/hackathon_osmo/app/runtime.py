@@ -104,6 +104,7 @@ class StudioRuntime:
             on_log=self.arbiter.log,
             on_light=self._trigger_light_reaction,
             on_prewarm=self.trigger_prewarm,
+            on_auto_express=self._trigger_auto_expression,
             recorder=self.recorder,
             memory=self.memory,
         )
@@ -121,6 +122,7 @@ class StudioRuntime:
         self.osmo_tx_packets: int = 0
         self.osmo_last_tx: str = ""
         self._hw_busy_until: float = 0.0
+        self._last_expr_t: float = 0.0
         self._prewarm_desk_task: asyncio.Task[tuple[float | None, float | None]] | None = None
         self._prewarm_face_task: asyncio.Task[None] | None = None
 
@@ -200,6 +202,24 @@ class StudioRuntime:
     def _trigger_light_reaction(self, reaction: str) -> None:
         if self.hilight.connected:
             self.hilight.start_reaction(reaction)
+
+    def _trigger_auto_expression(self, gesture: str, led: str) -> None:
+        """Organic zero-latency micro-expressions (nod / shake / curious tilt + HiLight + 3D face)
+        in Dialogue / Audience mode — fires seamlessly while Osmo speaks, never interrupts desk or pivots!
+        """
+        now = time.monotonic()
+        if self.arbiter.desk_mode or now < self._hw_busy_until:
+            return
+        if (now - self._last_expr_t) < 2.6:
+            return
+        if self.arbiter.latest.active_gesture:
+            return
+        self._last_expr_t = now
+        if gesture in GESTURES:
+            self.arbiter.trigger_gesture(gesture)
+        if led and self.hilight.connected:
+            self.hilight.start_reaction(led)
+        self.arbiter.log("EXPR", f"Micro-expression naturelle → {gesture} + LED {led}")
 
     def _get_latest_frame_jpeg(
         self,
@@ -834,6 +854,8 @@ class StudioRuntime:
 
     async def _prewarm_face_return(self) -> None:
         """Execute front-camera switch + fast arm return in parallel during SSE streaming."""
+        # Hold face-loss SEARCH paused until the arm actually finishes arriving back at Zach's face!
+        self.arbiter.ai_hold_mode = True
         if self.hilight.connected:
             self.hilight.start_reaction("off")
         cam_task = asyncio.create_task(
@@ -1268,6 +1290,7 @@ class StudioRuntime:
         if name == "express":
             gesture = str(args.get("gesture", "none"))
             led = str(args.get("led", "none"))
+            self._last_expr_t = time.monotonic()
             if gesture != "none" and gesture in GESTURES:
                 self.arbiter.trigger_gesture(gesture)
             if led != "none" and self.hilight.connected:
@@ -1328,7 +1351,15 @@ class StudioRuntime:
             if mode == "clear":
                 self.screen_card = {"mode": "none", "title": "", "items": [], "note": "", "updated_at": time.time()}
                 self.arbiter.log("SCREEN", "Écran Pixel OLED remis en mode normal")
-                out: dict[str, Any] = {"ok": True, "mode": "clear"}
+                turned_clear = False
+                if face_user and (self.arbiter.desk_mode or self._prewarm_face_task is not None):
+                    turned_clear = True
+                    await self.return_to_face_mode(
+                        search_if_missing=False,
+                        return_image=False,
+                        wait_for_face=False,
+                    )
+                out: dict[str, Any] = {"ok": True, "mode": "clear", "turned_to_user": turned_clear}
                 if spoken:
                     out["_spoken_override"] = spoken
                 return out
