@@ -34,15 +34,16 @@ def test_robot_tools_compact_five_tool_hierarchy() -> None:
 
     screen_tool = next(t for t in ROBOT_TOOLS if t["name"] == "show_on_screen")
     props = screen_tool["parameters"]["properties"]
-    assert props["mode"]["enum"] == ["exercise", "checklist", "concept", "clear"]
-    assert "face_user" in props
+    # `face_user` must be the FIRST schema property so SSE streams it within ~50ms for parallel arm return!
+    assert list(props.keys())[0] == "face_user"
+    assert props["mode"]["enum"] == ["exercise", "feedback", "checklist", "concept", "clear"]
     assert "spoken_summary" in props
     assert set(screen_tool["parameters"]["required"]) == {
+        "face_user",
         "mode",
         "title",
         "items",
         "note",
-        "face_user",
         "spoken_summary",
     }
 
@@ -183,5 +184,47 @@ def test_sideband_detects_attentive_listening_and_barge_in() -> None:
         assert snap2["barge_in_age_ms"] is not None and snap2["barge_in_age_ms"] < 1000.0
 
     asyncio.run(_run())
+
+
+def test_sse_stream_triggers_speculative_hardware_prewarm() -> None:
+    prewarms: list[str] = []
+    brain = OpenAILiveBrain(on_prewarm=prewarms.append)
+
+    # 1. look_at_desk immediately pre-warms desk pivot
+    brain._handle_stream_event(
+        "response.output_item.added",
+        {"item": {"type": "function_call", "name": "look_at_desk"}},
+        "thinking",
+    )
+    assert prewarms == ["desk"]
+
+    # 2. show_on_screen with face_user=true pre-warms face return on the first JSON delta!
+    brain._stream_prewarm_fired = ""
+    brain._handle_stream_event(
+        "response.output_item.added",
+        {"item": {"type": "function_call", "name": "show_on_screen"}},
+        "reading_sheet",
+    )
+    brain._handle_stream_event(
+        "response.function_call_arguments.delta",
+        {"delta": '{"face_user": true, "mode": "exercise"'},
+        "reading_sheet",
+    )
+    assert prewarms == ["desk", "face"]
+
+    # 3. show_on_screen with face_user=false must NOT pre-warm face return
+    brain._stream_prewarm_fired = ""
+    brain._handle_stream_event(
+        "response.output_item.added",
+        {"item": {"type": "function_call", "name": "show_on_screen"}},
+        "reading_sheet",
+    )
+    brain._handle_stream_event(
+        "response.function_call_arguments.delta",
+        {"delta": '{"face_user": false, "mode": "concept"'},
+        "reading_sheet",
+    )
+    assert prewarms == ["desk", "face"]
+
 
 

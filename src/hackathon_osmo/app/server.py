@@ -376,6 +376,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 items = runtime.screen_card.get("items") or []
                 if 0 <= idx < len(items):
                     items[idx]["done"] = not bool(items[idx].get("done"))
+                    if items and all(bool(it.get("done")) for it in items) and runtime.hilight.connected:
+                        runtime.hilight.start_reaction("yes")
 
             elif action == "clear_screen_card":
                 runtime.screen_card = {"mode": "none", "title": "", "items": [], "note": "", "updated_at": 0.0}

@@ -340,6 +340,9 @@
       if (cmode === "checklist") {
         live.mood = "desk_locked";
         live.stateLabel = "CHECKLIST";
+      } else if (cmode === "feedback") {
+        live.mood = "yes";
+        live.stateLabel = "FEEDBACK";
       } else if (cmode === "concept") {
         live.mood = "curious";
         live.stateLabel = "CONCEPT";
@@ -449,7 +452,15 @@
 
     elBoardCard.dataset.cardMode = mode;
     elBoardModeBadge.textContent = mode.toUpperCase();
-    elBoardTitle.textContent = card.title || (mode === "exercise" ? "PRACTICE EXERCISE" : mode === "checklist" ? "STUDY CHECKLIST" : "KEY CONCEPT");
+    elBoardTitle.textContent =
+      card.title ||
+      (mode === "exercise"
+        ? "PRACTICE EXERCISE"
+        : mode === "feedback"
+          ? "WORK CHECK · FEEDBACK"
+          : mode === "checklist"
+            ? "STUDY CHECKLIST"
+            : "KEY CONCEPT");
 
     // Checklist completion progress bar
     if (mode === "checklist" && items.length > 0) {
@@ -486,12 +497,29 @@
       elBoardGiven.classList.add("hidden");
     }
 
-    // Render Exercise questions / Checklist items / Concept bullets
+    // Render Exercise questions / Feedback ✓△→ rows / Checklist items / Concept bullets
     elBoardList.innerHTML = displayRows.map((row, rowIdx) => {
       let tag = `0${rowIdx + 1}`;
       let bodyText = row.text;
+      let extraCls = "";
       if (mode === "checklist") {
         tag = row.done ? "[✓]" : "[ ]";
+      } else if (mode === "feedback") {
+        if (/^(?:ok|good|correct|✓)\s*[:—-]?\s*/i.test(bodyText)) {
+          tag = "✓";
+          extraCls = "fb-ok";
+          bodyText = bodyText.replace(/^(?:ok|good|correct|✓)\s*[:—-]\s*/i, "").trim();
+        } else if (/^(?:fix|tip|watch|correction|✗|△)\s*[:—-]?\s*/i.test(bodyText)) {
+          tag = "△";
+          extraCls = "fb-fix";
+          bodyText = bodyText.replace(/^(?:fix|tip|watch|correction|✗|△)\s*[:—-]\s*/i, "").trim();
+        } else if (/^(?:next|try|→)\s*[:—-]?\s*/i.test(bodyText)) {
+          tag = "→";
+          extraCls = "fb-next";
+          bodyText = bodyText.replace(/^(?:next|try|→)\s*[:—-]\s*/i, "").trim();
+        } else {
+          tag = "·";
+        }
       } else if (mode === "exercise") {
         const mQ = bodyText.match(/^(Q\d+|Part\s*[A-Z]|\d+)[\)\.\:\-]\s*(.+)$/i);
         if (mQ) {
@@ -501,7 +529,7 @@
           tag = `Q${rowIdx + 1}`;
         }
       }
-      return `<li class="board-item ${row.done ? "done" : ""}" data-idx="${row.origIdx}"><span class="item-tag">${escHtml(tag)}</span><span class="item-text">${escHtml(bodyText)}</span></li>`;
+      return `<li class="board-item ${extraCls} ${row.done ? "done" : ""}" data-idx="${row.origIdx}"><span class="item-tag">${escHtml(tag)}</span><span class="item-text">${escHtml(bodyText)}</span></li>`;
     }).join("");
 
     // Exercise collapsible Hint vs Concept/Checklist bottom Note
@@ -524,9 +552,11 @@
     elBoardFootGuide.textContent =
       mode === "exercise"
         ? (noteTxt ? "SOLVE ON PAPER · TAP HINT IF STUCK" : "SOLVE ON PAPER · SAY CHECK MY SHEET")
-        : mode === "checklist"
-          ? "TAP ITEMS TO CHECK OFF"
-          : "OSMO // OLED CONCEPT BOARD";
+        : mode === "feedback"
+          ? "REVIEW FEEDBACK · READY FOR NEXT STEP"
+          : mode === "checklist"
+            ? "TAP ITEMS TO CHECK OFF"
+            : "OSMO // OLED CONCEPT BOARD";
 
     btnBoardPivot.textContent = live.deskMode ? "FACE ME ↗" : "LOOK AT SHEET ↘";
   }
@@ -791,6 +821,21 @@
           { text: "Q2: Calculate the peak instantaneous heat power Pmax in watts.", done: false }
         ],
         note: "Use Pmax = Qmax × A (check that cm² cancels cleanly!)",
+        updated_at: Date.now()
+      };
+    } else if (preset === "feedback") {
+      live.mode = "board";
+      live.mood = "yes";
+      live.stateLabel = "FEEDBACK";
+      live.screenCard = {
+        mode: "feedback",
+        title: "WORK CHECK · HEAT TRANSFER",
+        items: [
+          { text: "OK: Direction of heat flow (skin → fabric → air) is spot on", done: false },
+          { text: "FIX: Pmax = 0.18 × 10 = 1.8 W (watch the decimal placement)", done: false },
+          { text: "NEXT: Compute total heat energy transferred over 5 seconds", done: false }
+        ],
+        note: "Strong physical intuition — one tiny decimal slip to fix!",
         updated_at: Date.now()
       };
     } else if (preset === "checklist") {

@@ -103,6 +103,7 @@ class StudioRuntime:
             on_get_context=self._get_robot_context,
             on_log=self.arbiter.log,
             on_light=self._trigger_light_reaction,
+            on_prewarm=self.trigger_prewarm,
             recorder=self.recorder,
             memory=self.memory,
         )
@@ -120,6 +121,8 @@ class StudioRuntime:
         self.osmo_tx_packets: int = 0
         self.osmo_last_tx: str = ""
         self._hw_busy_until: float = 0.0
+        self._prewarm_desk_task: asyncio.Task[tuple[float | None, float | None]] | None = None
+        self._prewarm_face_task: asyncio.Task[None] | None = None
 
         self._stream: PixelCameraStream | None = None
         self._osmo: OsmoBleClient | None = None
@@ -730,6 +733,118 @@ class StudioRuntime:
         )
         return self.sheet_detector.detect(small)
 
+    def trigger_prewarm(self, target: str) -> None:
+        """Speculative hardware pre-warm triggered from OpenAI SSE stream deltas (~0.6–2.0s saved!)."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        if target == "desk":
+            if self.arbiter.desk_mode or not self.osmo_connected:
+                return
+            if self._prewarm_desk_task is not None and not self._prewarm_desk_task.done():
+                return
+            if self._prewarm_face_task is not None and not self._prewarm_face_task.done():
+                return
+            raw_target_pitch = float(self.desk_pose.get("pitch_deg", 49.3))
+            target_pitch = max(30.0, min(65.0, abs(raw_target_pitch)))
+            pivot_deg = float(self.desk_pose.get("pivot_deg", 135.0))
+            if not self.arbiter.live_motors:
+                self.arbiter.live_motors = True
+            self.arbiter.desk_mode = True
+            self.arbiter.ai_hold_mode = True
+            if self.screen_card.get("mode") != "none":
+                self.screen_card = {"mode": "none", "title": "", "items": [], "note": "", "updated_at": time.time()}
+            if self.hilight.connected:
+                self.hilight.start_reaction("sheet_search")
+            self.arbiter.log("PREWARM", "Anticipation SSE → pivot bureau lancé pendant le streaming IA")
+            self._prewarm_desk_task = asyncio.create_task(self._pivot_arm_to_desk(pivot_deg, target_pitch))
+
+        elif target == "face":
+            if not self.arbiter.desk_mode:
+                return
+            if self._prewarm_face_task is not None and not self._prewarm_face_task.done():
+                return
+            if self._prewarm_desk_task is not None and not self._prewarm_desk_task.done():
+                return
+            self.arbiter.log("PREWARM", "Anticipation SSE → retour visage + caméra avant lancé en parallèle")
+            self._prewarm_face_task = asyncio.create_task(self._prewarm_face_return())
+
+    async def _pivot_arm_to_desk(
+        self,
+        pivot_deg: float,
+        target_pitch: float,
+    ) -> tuple[float | None, float | None]:
+        """Fast geodesic left Pan pivot + overlapped downward Pitch servo to the calibrated desk pose."""
+        att = self._osmo.last_attitude if (self._osmo and self.osmo_connected) else None
+        if not self._osmo or not self.osmo_connected or att is None:
+            return (att.roll_deg if att else None, att.pitch_deg if att else None)
+
+        self._hw_busy_until = time.monotonic() + 8.0
+        try:
+            if self._osmo.is_landscape() is False:
+                await self._osmo.send_toggle_orientation()
+                await asyncio.sleep(1.0)
+            face_pitch = float(self.face_pose.get("pitch_deg", 5.0))
+            if abs(self._osmo.last_attitude.pitch_deg - face_pitch) > 15.0:
+                await self._servo_pitch_to_imu(face_pitch, timeout_s=1.3)
+            self._face_quat = self._osmo.last_attitude.quat
+            self.arbiter.log(
+                "ARM",
+                f"Pivot géodésique {pivot_deg:.0f}° aligné sur la tête → Pitch feuille {target_pitch:+.1f}°",
+            )
+            turned = await self._pivot_pan_relative_quat(
+                pivot_deg,
+                overlap_pitch_target=target_pitch,
+            )
+            final_pitch = await self._servo_pitch_to_imu(target_pitch, timeout_s=2.2)
+            self.arbiter.log("ARM", f"Pivot terminé : ΔPan={turned:.0f}°, Pitch={final_pitch or 0:+.1f}°")
+            return (self._osmo.last_attitude.roll_deg if self._osmo.last_attitude else None), final_pitch
+        finally:
+            await self._send_body_speed(0.0, 0.0)
+            self._hw_busy_until = 0.0
+
+    async def _return_arm_to_face(self) -> None:
+        """Fast geodesic unwind back to saved head quaternion with simultaneous upward pitch lift (~1.3s)."""
+        if not self._osmo or not self.osmo_connected:
+            return
+        face_pitch = float(self.face_pose.get("pitch_deg", 5.0))
+        if self._face_quat is not None and self._osmo.last_attitude is not None:
+            self._hw_busy_until = time.monotonic() + 6.0
+            try:
+                if self._osmo.last_attitude.pitch_deg > 28.0:
+                    for _ in range(4):
+                        await self._send_body_speed(0.0, 80.0)
+                        await asyncio.sleep(0.05)
+                rem = await self._pivot_pan_back_to_quat(
+                    self._face_quat,
+                    timeout_s=3.2,
+                    overlap_pitch_target=face_pitch,
+                )
+                if self._osmo.last_attitude and abs(self._osmo.last_attitude.pitch_deg - face_pitch) > 6.0:
+                    await self._servo_pitch_to_imu(face_pitch, timeout_s=0.9)
+                self.arbiter.log("ARM", f"Retour géodésique sur la tête terminé (écart={rem:.0f}°)")
+            finally:
+                await self._send_body_speed(0.0, 0.0)
+                self._hw_busy_until = 0.0
+            self._face_quat = None
+        else:
+            await self.recenter_landscape()
+
+    async def _prewarm_face_return(self) -> None:
+        """Execute front-camera switch + fast arm return in parallel during SSE streaming."""
+        if self.hilight.connected:
+            self.hilight.start_reaction("off")
+        cam_task = asyncio.create_task(
+            self.configure_camera(facing="front", zoom=1.0, width=1280, height=720, bitrate=8_000_000, wait_frame=True)
+        )
+        arm_task = asyncio.create_task(self._return_arm_to_face())
+        await asyncio.gather(cam_task, arm_task)
+        self.arbiter.reset_face_loss_timers()
+        self.arbiter.desk_mode = False
+        self.arbiter.ai_hold_mode = False
+
     async def enter_desk_reading_mode(
         self,
         *,
@@ -738,10 +853,10 @@ class StudioRuntime:
         ultra_hd: bool = False,
         scan_pages: bool = False,
     ) -> dict[str, Any]:
-        """Full Desk Reading transition (connected to IMU pan/pitch + Bright-Paper Vision):
-        1. If not already on desk: geodesic left Pan pivot + overlapped downward Pitch servo in parallel with rear HD/4K startup
+        """Full Desk Reading transition (connected to IMU pan/pitch + Bright-Paper Vision + SSE Pre-Warm):
+        1. Reuses in-flight SSE speculative desk pivot if already started (~0.8s faster!), else pivots in parallel with rear HD/4K startup
         2. If already on desk: zero pivot, zero camera restart unless zoom or 4K actually changed!
-        3. Autofocus Laplacian sharpness gate -> bright-paper Vision segmentation (ignores MacBook!) -> mechanical centering
+        3. Autofocus Laplacian sharpness gate -> bright-paper Vision segmentation (ignores MacBook!) -> smart centering
         4. When scan_pages=True: switches to 4K 1.0x and slices BOTH pages of an open spread into razor-sharp
            overlapping upright HD tiles ([PAGE GAUCHE HD] + [PAGE DROITE HD]) in ONE single tool call!
         """
@@ -755,6 +870,15 @@ class StudioRuntime:
             int(self.desk_pose.get("height", 1512)),
         )
 
+        # Cancel any opposite speculative face return cleanly
+        if self._prewarm_face_task is not None and not self._prewarm_face_task.done():
+            self._prewarm_face_task.cancel()
+            try:
+                await self._prewarm_face_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._prewarm_face_task = None
+
         if not self.arbiter.live_motors:
             self.arbiter.live_motors = True
 
@@ -762,7 +886,14 @@ class StudioRuntime:
         self.arbiter.ai_hold_mode = True
 
         att = self._osmo.last_attitude if (self._osmo and self.osmo_connected) else None
-        already_on_desk = self.facing == "back" and att is not None and abs(att.pitch_deg - target_pitch) < 18.0
+        prewarm_arm = self._prewarm_desk_task
+        self._prewarm_desk_task = None
+        already_on_desk = (
+            prewarm_arm is None
+            and self.facing == "back"
+            and att is not None
+            and abs(att.pitch_deg - target_pitch) < 18.0
+        )
 
         # For 2-page spread scan, prefer 1.0x 4K unless caller explicitly asked for another zoom
         if scan_pages and zoom is None:
@@ -778,36 +909,8 @@ class StudioRuntime:
             if self.hilight.connected:
                 self.hilight.start_reaction("sheet_search")
 
-        async def _pivot_arm() -> tuple[float | None, float | None]:
-            if already_on_desk or not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
-                return (att.roll_deg if att else None, att.pitch_deg if att else None)
-
-            self._hw_busy_until = time.monotonic() + 8.5
-            try:
-                if self._osmo.is_landscape() is False:
-                    await self._osmo.send_toggle_orientation()
-                    await asyncio.sleep(1.0)
-                # Level pitch briefly before horizontal pan so quaternion rotation stays pure horizontal
-                face_pitch = float(self.face_pose.get("pitch_deg", 5.0))
-                if abs(self._osmo.last_attitude.pitch_deg - face_pitch) > 15.0:
-                    await self._servo_pitch_to_imu(face_pitch, timeout_s=1.5)
-                # Save exact head alignment quaternion so return_to_face_mode comes straight back to the user!
-                self._face_quat = self._osmo.last_attitude.quat
-                self.arbiter.log(
-                    "ARM",
-                    f"Pivot géodésique {pivot_deg:.0f}° aligné sur la tête → Pitch feuille {target_pitch:+.1f}°",
-                )
-                # Overlap downward pitch during final 38° of left pan (~0.8s faster!)
-                turned = await self._pivot_pan_relative_quat(
-                    pivot_deg,
-                    overlap_pitch_target=target_pitch,
-                )
-                final_pitch = await self._servo_pitch_to_imu(target_pitch, timeout_s=2.6)
-                self.arbiter.log("ARM", f"Pivot terminé : ΔPan={turned:.0f}°, Pitch={final_pitch or 0:+.1f}°")
-                return (self._osmo.last_attitude.roll_deg if self._osmo.last_attitude else None), final_pitch
-            finally:
-                await self._send_body_speed(0.0, 0.0)
-                self._hw_busy_until = 0.0
+        async def _noop_arm() -> tuple[float | None, float | None]:
+            return (att.roll_deg if att else None, att.pitch_deg if att else None)
 
         cam_task = asyncio.create_task(
             self.configure_camera(
@@ -819,11 +922,17 @@ class StudioRuntime:
                 wait_frame=True,
             )
         )
-        arm_task = asyncio.create_task(_pivot_arm())
+        if prewarm_arm is not None:
+            arm_task = prewarm_arm
+        elif already_on_desk:
+            arm_task = asyncio.create_task(_noop_arm())
+        else:
+            arm_task = asyncio.create_task(self._pivot_arm_to_desk(pivot_deg, target_pitch))
+
         cam_ok, (final_pan, final_pitch) = await asyncio.gather(cam_task, arm_task)
 
         # Autofocus sharpness gate: guarantees crisp frame (never blurry AF-hunting like lap=1.6!)
-        sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.85, min_wait_s=0.16)
+        sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.75, min_wait_s=0.11)
 
         sheet = SheetDetection()
         auto_zoom_applied = self.camera_zoom
@@ -836,18 +945,18 @@ class StudioRuntime:
             if not sheet.found and zoom is None and self.camera_zoom > 0.6:
                 self.arbiter.log("SHEET", "Aucune feuille vue en 1x → passage ultra grand-angle 0.51x pour scanner le bureau")
                 await self.configure_camera(facing="back", zoom=0.51, width=req_w, height=req_h, wait_frame=True)
-                sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.75, min_wait_s=0.16)
+                sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.70, min_wait_s=0.11)
                 if sharp_frame is not None:
                     sheet = await asyncio.to_thread(self._detect_sheet_sync, sharp_frame)
                     self._latest_sheet = sheet
 
             if sheet.found:
-                # 1. Mechanical auto-centering onto the sheet center (with downward pitch safety clamp!)
+                # 1. Mechanical auto-centering ONLY when genuinely off-center (>16% in 2.7K/4K -> saves ~0.9s!)
                 err_x = sheet.cx - 0.5
                 err_y = sheet.cy - 0.5
                 fov_h = 65.0 / max(0.5, self.camera_zoom)
                 fov_v = 40.0 / max(0.5, self.camera_zoom)
-                if abs(err_x) > 0.10 or abs(err_y) > 0.10:
+                if abs(err_x) > 0.16 or abs(err_y) > 0.16:
                     pan_corr = max(-28.0, min(28.0, err_x * fov_h * 0.72))
                     tilt_corr = max(-16.0, min(16.0, err_y * fov_v * 0.72))
                     # Safety guard: never tilt upward above +30° desk bound (prevents ceiling drift!)
@@ -858,8 +967,8 @@ class StudioRuntime:
                         "SHEET",
                         f"Feuille [{sheet.source} {sheet.confidence:.2f}] à ({sheet.cx:.2f}, {sheet.cy:.2f}) → ciblage bras ({pan_corr:+.0f}°, {tilt_corr:+.0f}°)",
                     )
-                    await self.arbiter.move_relative_deg(pan_corr, tilt_corr, speed_dps=48.0, hold_after=True)
-                    sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.55, min_wait_s=0.14)
+                    await self.arbiter.move_relative_deg(pan_corr, tilt_corr, speed_dps=56.0, hold_after=True)
+                    sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.50, min_wait_s=0.11)
                     if sharp_frame is not None:
                         sheet = await asyncio.to_thread(self._detect_sheet_sync, sharp_frame)
                         self._latest_sheet = sheet
@@ -971,58 +1080,35 @@ class StudioRuntime:
         *,
         search_if_missing: bool = True,
         return_image: bool = True,
+        wait_for_face: bool = True,
     ) -> dict[str, Any]:
-        """Fast closed-loop return to Dialogue mode synchronized with Apple Vision Face & Search FSM."""
-        self.arbiter.log("ARM", "Retour rapide mode Dialogue (caméra avant + pivot simultané + vérif Apple Vision)")
-        if self.hilight.connected:
-            self.hilight.start_reaction("off")
+        """Fast closed-loop return to Dialogue mode (reuses in-flight SSE pre-warm if active!)."""
+        # Cancel any opposite speculative desk pivot cleanly
+        if self._prewarm_desk_task is not None and not self._prewarm_desk_task.done():
+            self._prewarm_desk_task.cancel()
+            try:
+                await self._prewarm_desk_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._prewarm_desk_task = None
 
-        async def _return_arm() -> None:
-            if not self._osmo or not self.osmo_connected:
-                return
-            face_pitch = float(self.face_pose.get("pitch_deg", 5.0))
-            if self._face_quat is not None and self._osmo.last_attitude is not None:
-                self._hw_busy_until = time.monotonic() + 6.5
-                try:
-                    # Brief 0.22s upward clearance lift, then simultaneous fast Pan unwind + Pitch lift (~1.4s total!)
-                    if self._osmo.last_attitude.pitch_deg > 28.0:
-                        for _ in range(4):
-                            await self._send_body_speed(0.0, 80.0)
-                            await asyncio.sleep(0.05)
-                    rem = await self._pivot_pan_back_to_quat(
-                        self._face_quat,
-                        timeout_s=3.4,
-                        overlap_pitch_target=face_pitch,
-                    )
-                    # Fine pitch finish only if still > 6° off head level
-                    if self._osmo.last_attitude and abs(self._osmo.last_attitude.pitch_deg - face_pitch) > 6.0:
-                        await self._servo_pitch_to_imu(face_pitch, timeout_s=1.0)
-                    self.arbiter.log("ARM", f"Retour géodésique sur la tête terminé (écart={rem:.0f}°)")
-                finally:
-                    await self._send_body_speed(0.0, 0.0)
-                    self._hw_busy_until = 0.0
-                self._face_quat = None
-            else:
-                await self.recenter_landscape()
+        prewarm_face = self._prewarm_face_task
+        self._prewarm_face_task = None
+        if prewarm_face is not None:
+            await prewarm_face
+        else:
+            self.arbiter.log("ARM", "Retour rapide mode Dialogue (caméra avant + pivot simultané + vérif Apple Vision)")
+            await self._prewarm_face_return()
 
-        cam_task = asyncio.create_task(
-            self.configure_camera(facing="front", zoom=1.0, width=1280, height=720, bitrate=8_000_000, wait_frame=True)
-        )
-        arm_task = asyncio.create_task(_return_arm())
-        await asyncio.gather(cam_task, arm_task)
-
-        self.arbiter.reset_face_loss_timers()
-        self.arbiter.desk_mode = False
-        self.arbiter.ai_hold_mode = False
-
-        found = False
-        deadline = time.monotonic() + 0.75
-        while time.monotonic() < deadline:
-            st = self.arbiter.latest.state
-            if self.arbiter.latest.face_detected and st not in ("AI_HOLD", "DESK_MODE"):
-                found = True
-                break
-            await asyncio.sleep(0.04)
+        found = bool(self.arbiter.latest.face_detected)
+        if wait_for_face:
+            deadline = time.monotonic() + 0.55
+            while time.monotonic() < deadline:
+                st = self.arbiter.latest.state
+                if self.arbiter.latest.face_detected and st not in ("AI_HOLD", "DESK_MODE"):
+                    found = True
+                    break
+                await asyncio.sleep(0.04)
 
         searched = False
         if not found and search_if_missing and self.osmo_connected:
@@ -1255,7 +1341,7 @@ class StudioRuntime:
                 if str(it).strip()
             ]
             note = str(args.get("note") or "").strip()[:180]
-            clean_mode = mode if mode in ("exercise", "checklist", "concept") else "exercise"
+            clean_mode = mode if mode in ("exercise", "feedback", "checklist", "concept") else "exercise"
             self.screen_card = {
                 "mode": clean_mode,
                 "title": title,
@@ -1265,12 +1351,16 @@ class StudioRuntime:
             }
             self.arbiter.log("SCREEN", f"Carte Pixel OLED [{clean_mode}] : {title} ({len(items)} items)")
 
-            # Natural "Show & Tell" choreography: if Osmo is currently facing the desk,
-            # automatically swing the Pixel OLED back toward Zach so he can read the screen right away!
+            # Natural "Show & Tell" choreography: join in-flight SSE pre-warm (or swing back now!)
+            # without blocking 750ms on face polling — Apple Vision locks automatically in the background!
             turned_to_user = False
-            if face_user and self.arbiter.desk_mode:
+            if face_user and (self.arbiter.desk_mode or self._prewarm_face_task is not None):
                 turned_to_user = True
-                await self.return_to_face_mode(search_if_missing=False, return_image=False)
+                await self.return_to_face_mode(
+                    search_if_missing=False,
+                    return_image=False,
+                    wait_for_face=False,
+                )
 
             if self.hilight.connected:
                 self.hilight.start_reaction("yes")

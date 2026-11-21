@@ -14,6 +14,7 @@
   --rim-b: 250;
   --halo-alpha: 0.08;
   --accent-ex: #60a5fa;
+  --accent-fb: #a78bfa;
   --accent-chk: #34d399;
   --accent-con: #fbbf24;
 }
@@ -275,6 +276,10 @@ body[data-mode="focus"] .hud-top {
   border-top-color: var(--accent-ex);
 }
 
+.board-card[data-card-mode="feedback"] {
+  border-top-color: var(--accent-fb);
+}
+
 .board-card[data-card-mode="checklist"] {
   border-top-color: var(--accent-chk);
 }
@@ -339,6 +344,10 @@ body[data-mode="focus"] .hud-top {
   color: #07080b;
   background: var(--accent-ex);
   flex-shrink: 0;
+}
+
+.board-card[data-card-mode="feedback"] .board-mode-badge {
+  background: var(--accent-fb);
 }
 
 .board-card[data-card-mode="checklist"] .board-mode-badge {
@@ -481,6 +490,33 @@ body[data-mode="focus"] .hud-top {
 
 .board-card[data-card-mode="concept"] .board-item {
   border-left-color: rgba(251, 191, 36, 0.72);
+}
+
+.board-card[data-card-mode="feedback"] .board-item.fb-ok {
+  border-left-color: #34d399;
+  background: rgba(52, 211, 153, 0.06);
+}
+
+.board-card[data-card-mode="feedback"] .board-item.fb-ok .item-tag {
+  color: #34d399;
+}
+
+.board-card[data-card-mode="feedback"] .board-item.fb-fix {
+  border-left-color: #fbbf24;
+  background: rgba(251, 191, 36, 0.06);
+}
+
+.board-card[data-card-mode="feedback"] .board-item.fb-fix .item-tag {
+  color: #fbbf24;
+}
+
+.board-card[data-card-mode="feedback"] .board-item.fb-next {
+  border-left-color: #60a5fa;
+  background: rgba(96, 165, 250, 0.06);
+}
+
+.board-card[data-card-mode="feedback"] .board-item.fb-next .item-tag {
+  color: #60a5fa;
 }
 
 .board-item.done {
