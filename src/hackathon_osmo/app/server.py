@@ -106,6 +106,47 @@ async def api_telemetry_summary() -> dict[str, Any]:
     return runtime.recorder.summary()
 
 
+class MemoryCreatePayload(BaseModel):
+    content: str
+    category: str = "fact"
+    pinned: bool = False
+
+
+@app.get("/api/memory")
+async def api_memory_list(q: str = "") -> dict[str, Any]:
+    if q.strip():
+        return {
+            "stats": runtime.memory.stats(),
+            "items": runtime.memory.search_memories(q.strip(), limit=20),
+            "episodes": runtime.memory.search_episodes(q.strip(), limit=8),
+        }
+    return {
+        "stats": runtime.memory.stats(),
+        "items": runtime.memory.list_memories(limit=30),
+    }
+
+
+@app.post("/api/memory")
+async def api_memory_create(payload: MemoryCreatePayload) -> JSONResponse:
+    res = runtime.memory.save_memory(
+        payload.content,
+        category=payload.category,
+        source="studio",
+        pinned=payload.pinned,
+    )
+    if res.get("ok"):
+        runtime.arbiter.log("MEM", f"Ajout manuel [{payload.category}] : « {payload.content[:60]} »")
+    return JSONResponse(res, status_code=200 if res.get("ok") else 400)
+
+
+@app.delete("/api/memory/{mem_id}")
+async def api_memory_delete(mem_id: int) -> JSONResponse:
+    deleted = runtime.memory.delete_memory(mem_id)
+    if deleted:
+        runtime.arbiter.log("MEM", f"Souvenir #{mem_id} supprimé")
+    return JSONResponse({"ok": deleted, "id": mem_id}, status_code=200 if deleted else 404)
+
+
 class LiveSessionOffer(BaseModel):
     sdp: str
 

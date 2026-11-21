@@ -70,6 +70,21 @@ async function launchPixelFace() {
     alert('Erreur réseau : ' + err.message);
   }
 }
+async function addMemoryItem() {
+  const inp = document.getElementById('txt-mem');
+  const cat = document.getElementById('sel-mem-cat')?.value || 'fact';
+  const content = (inp?.value || '').trim();
+  if (!content) return;
+  inp.value = '';
+  await fetch('/api/memory', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, category: cat }),
+  }).catch(() => {});
+}
+async function deleteMemoryItem(id) {
+  await fetch(`/api/memory/${id}`, { method: 'DELETE' }).catch(() => {});
+}
 function rotateNext() {
   if (!state) return;
   send({ action: 'camera', rotate_deg: (state.camera.rotate_deg + 90) % 360 });
@@ -235,6 +250,24 @@ function render(s) {
   logEl.innerHTML = s.events.map(e =>
     `<div class="log-line"><span class="log-ts">${e.ts}</span><span class="log-tag">[${e.tag}]</span>${e.msg}</div>`
   ).join('');
+
+  if (s.memory && s.memory.stats) {
+    const mc = document.getElementById('m-mem-count');
+    if (mc) mc.textContent = `${s.memory.stats.memories_count} MEM · ${s.memory.stats.episodes_count} EP`;
+    const ml = document.getElementById('mem-list');
+    if (ml) {
+      const items = s.memory.items || [];
+      ml.innerHTML = items.length
+        ? items.map(m => `
+            <div class="mem-item">
+              <span class="mem-cat">${escapeHtml(m.category)}</span>
+              <span class="mem-txt">${escapeHtml(m.content)}</span>
+              <button class="mem-del" onclick="deleteMemoryItem(${m.id})" title="Supprimer">×</button>
+            </div>
+          `).join('')
+        : '<div class="chat-empty">Aucun souvenir enregistré.</div>';
+    }
+  }
 
   if (s.voice && typeof renderVoiceState === 'function') {
     renderVoiceState(s.voice);

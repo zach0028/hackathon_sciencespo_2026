@@ -195,6 +195,29 @@
 
     <details class="panel drawer">
       <summary class="panel-head drawer-head">
+        <span class="panel-title">MEMORY // SQLITE LOCAL</span>
+        <span class="mono muted" id="m-mem-count">0 MEM</span>
+      </summary>
+      <div class="drawer-body">
+        <div class="voice-row" style="margin-bottom:0">
+          <select id="sel-mem-cat">
+            <option value="fact">FACT</option>
+            <option value="preference">PREF</option>
+            <option value="note">NOTE</option>
+            <option value="task">TASK</option>
+          </select>
+          <input id="txt-mem" type="text" placeholder="Ajouter un souvenir durable..."
+            onkeydown="if(event.key==='Enter') addMemoryItem()" />
+          <button onclick="addMemoryItem()">SAVE</button>
+        </div>
+        <div id="mem-list" class="mem-list">
+          <div class="chat-empty">Aucun souvenir enregistré.</div>
+        </div>
+      </div>
+    </details>
+
+    <details class="panel drawer">
+      <summary class="panel-head drawer-head">
         <span class="panel-title">CALIBRATION // PID · POSES · PROTOCOL</span>
         <span class="mono muted">+</span>
       </summary>

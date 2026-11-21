@@ -16,6 +16,7 @@ from hackathon_osmo.ai.live_brain import (
     BrainTurnResult,
     OpenAILiveBrain,
 )
+from hackathon_osmo.ai.memory import OsmoMemoryStore
 from hackathon_osmo.control.motion import (
     GESTURES,
     MotionArbiter,
@@ -71,6 +72,7 @@ class StudioRuntime:
         self._frame_ready_event = asyncio.Event()
 
         self.recorder = SessionRecorder()
+        self.memory = OsmoMemoryStore()
         self.detector = AppleVisionFaceDetector()
         self.sheet_detector = AppleVisionSheetDetector()
         self._latest_sheet: SheetDetection = SheetDetection()
@@ -87,6 +89,7 @@ class StudioRuntime:
             on_log=self.arbiter.log,
             on_light=self._trigger_light_reaction,
             recorder=self.recorder,
+            memory=self.memory,
         )
         self._load_calibration()
         self._last_motor_cmd: tuple[float, float] = (0.0, 0.0)
@@ -1080,6 +1083,32 @@ class StudioRuntime:
                 return {"ok": True, "mode": "toggle_orientation"}
             return {"ok": False, "error": f"Mode inconnu: {mode}"}
 
+        # --- 6. remember (local persistent SQLite + FTS5 memory) ---
+        if name == "remember":
+            act = str(args.get("action", "search"))
+            cat = str(args.get("category", "fact"))
+            content = str(args.get("content", "")).strip()
+            query = str(args.get("query", "")).strip()
+            if act == "save":
+                saved = self.memory.save_memory(content, category=cat, source="ai")
+                if saved.get("ok"):
+                    self.arbiter.log("MEM", f"Souvenir [{cat}] enregistré : « {content[:70]} »")
+                    if self.hilight.connected:
+                        self.hilight.start_reaction("yes")
+                return saved
+            if act == "search":
+                q = query or content
+                mems = self.memory.search_memories(q, limit=5) if q else self.memory.list_memories(limit=8)
+                eps = self.memory.search_episodes(q, limit=4) if q else []
+                self.arbiter.log("MEM", f"Recherche mémoire « {q[:40]} » → {len(mems)} souvenirs, {len(eps)} épisodes")
+                return {"ok": True, "memories": mems, "episodes": eps}
+            if act == "forget":
+                q = query or content
+                n = self.memory.forget(q)
+                self.arbiter.log("MEM", f"Oubli mémoire « {q[:40]} » → {n} supprimé(s)")
+                return {"ok": True, "deleted": n}
+            return {"ok": False, "error": f"Action mémoire inconnue: {act}"}
+
         return {"ok": False, "error": f"Outil inconnu: {name}"}
 
     async def create_live_session(self, sdp_offer: str) -> dict[str, str]:
@@ -1559,6 +1588,10 @@ class StudioRuntime:
                 "lost_policy": cfg.lost_policy,
             },
             "gestures": [{"id": k, "label": v[0]} for k, v in GESTURES.items()],
+            "memory": {
+                "stats": self.memory.stats(),
+                "items": self.memory.list_memories(limit=12),
+            },
             "telemetry": self.recorder.summary(),
             "events": list(self.arbiter.events)[:25],
         }

@@ -26,6 +26,7 @@ import numpy as np
 import websockets
 from dotenv import load_dotenv
 
+from hackathon_osmo.ai.memory import OsmoMemoryStore
 from hackathon_osmo.paths import ENV_FILE
 from hackathon_osmo.telemetry.recorder import SessionRecorder
 
@@ -84,6 +85,7 @@ Règles strictes :
    - PRIORITÉ 3 — look_at_user(search_if_missing) : pour revenir vers Zach (caméra avant + retour tête + vérification Apple Vision + réactivation AUTOMATIQUE du suivi visage follow_face). N'appelle JAMAIS set_tracking(follow_face) après look_at_user : le suivi visage est déjà actif dès le retour !
    - PRIORITÉ 4 — move_arm(pan_deg, tilt_deg, scan_room) : pour ajuster manuellement l'angle du bras (pan < 0 GAUCHE, pan > 0 DROITE, tilt < 0 HAUT, tilt > 0 BAS) ou explorer la pièce (scan_room=true).
    - PRIORITÉ 5 — express(gesture, led) & set_tracking(mode) : en mode dialogue, accompagne tes réponses d'un geste + LED en 1 seul appel, ou fige/réactive le suivi visage uniquement si tu es DÉJÀ en caméra avant.
+   - PRIORITÉ 6 — remember(action, category, content, query) : mémoire locale persistante SQLite. Appelle save UNIQUEMENT quand Zach demande explicitement de retenir/noter une info ou après avoir extrait une donnée clé d'une feuille (contact, tâche, préférence) ; appelle search pour retrouver une vieille note/feuille absente du contexte [Mémoire] ; appelle forget pour effacer.
 """
 
 ROBOT_TOOLS: list[dict[str, Any]] = [
@@ -199,6 +201,37 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "type": "function",
+        "name": "remember",
+        "description": "Mémoire locale persistante SQLite (survit aux redémarrages) : enregistre une préférence, un fait, une tâche ou un extrait de feuille (action='save'), recherche une note ou feuille passée (action='search'), ou oublie un souvenir (action='forget').",
+        "strict": True,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["save", "search", "forget"],
+                    "description": "save (mémoriser durablement), search (chercher dans la mémoire et les lectures passées), ou forget (supprimer).",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": ["preference", "fact", "note", "task"],
+                    "description": "Catégorie du souvenir pour save (preference, fact, note, task).",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Texte court et factuel à mémoriser si action='save' (sinon chaîne vide '').",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Mots-clés à rechercher ou oublier si action='search'/'forget' (sinon chaîne vide '').",
+                },
+            },
+            "required": ["action", "category", "content", "query"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -303,6 +336,7 @@ class OpenAILiveBrain:
     on_log: LogCallback | None = None
     on_light: LightCallback | None = None
     recorder: SessionRecorder | None = None
+    memory: OsmoMemoryStore | None = None
 
     # Live session state
     session_id: str | None = None
@@ -881,6 +915,10 @@ class OpenAILiveBrain:
             text_lines: list[str] = []
             if robot_ctx:
                 text_lines.append(f"[Capteurs: {robot_ctx}]")
+            if self.memory is not None:
+                mem_snippet = self.memory.build_context_snippet(user_text)
+                if mem_snippet:
+                    text_lines.append(f"[Mémoire: {mem_snippet}]")
             if include_recent_history and self._recent_turns:
                 hist = " | ".join(
                     f"{'Zach' if t['role'] == 'user' else 'Osmo'}: {t['content']}"
@@ -1074,6 +1112,14 @@ class OpenAILiveBrain:
                             "total_ms": dt_ms,
                         },
                     }
+                )
+
+            if self.memory is not None and (user_text.strip() or reply_text.strip()):
+                self.memory.record_episode(
+                    user_text,
+                    reply_text,
+                    mode="desk" if is_desk else "face",
+                    tools=tools_called,
                 )
 
             self._append_ui_transcript(
