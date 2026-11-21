@@ -99,8 +99,20 @@
     hilightColor: null,
     hilightEffect: "off",
     reply: "",
-    stateLabel: "READY"
+    stateLabel: "READY",
+    // Real-time mechanical arm synchronization (DJI Osmo Mobile 3 IMU + motor velocity)
+    armConnected: false,
+    armPivoting: false,
+    armPanDps: 0,
+    armTiltDps: 0,
+    armRelPanDeg: 0,
+    armRelPitchDeg: 0
   };
+
+  function wrapDeg(deg) {
+    let d = ((deg + 180) % 360 + 360) % 360 - 180;
+    return d;
+  }
 
   // --- 2nd-order Spring-Damper Physics for ultra-organic 3D head motion ---
   function makeSpring(val = 0, stiffness = 95, damping = 13) {
@@ -152,6 +164,7 @@
     const vis = s.vision || {};
     const voice = s.voice || {};
     const hi = s.hilight || {};
+    const osmo = s.osmo || {};
 
     const isDesk = Boolean(cam.facing === "back" || vis.state === "DESK_MODE");
     const sheetFound = Boolean(cam.sheet && cam.sheet.found);
@@ -160,6 +173,22 @@
     const busy = Boolean(voice.busy);
     const liveOn = Boolean(voice.live_connected);
     const searching = vis.state === "SEARCHING";
+
+    // Real-time mechanical arm coupling (IMU attitude delta + live motor velocity)
+    live.armConnected = Boolean(osmo.connected);
+    live.armPivoting = Boolean(osmo.pivoting);
+    const bodyCmd = osmo.body_cmd || {};
+    live.armPanDps = Number(bodyCmd.pan_dps ?? vis.cmd_yaw_dps ?? 0);
+    live.armTiltDps = Number(bodyCmd.tilt_dps ?? vis.cmd_pitch_dps ?? 0);
+    if (osmo.attitude && osmo.face_pose) {
+      const refPan = Number(osmo.face_pose.pan_roll_deg ?? 179.3);
+      const refPitch = Number(osmo.face_pose.pitch_deg ?? 5.3);
+      live.armRelPanDeg = wrapDeg(Number(osmo.attitude.roll ?? refPan) - refPan);
+      live.armRelPitchDeg = Number(osmo.attitude.pitch ?? refPitch) - refPitch;
+    } else {
+      live.armRelPanDeg = 0;
+      live.armRelPitchDeg = 0;
+    }
 
     const topTurn = Array.isArray(voice.transcript) && voice.transcript.length > 0 ? voice.transcript[0] : null;
     const reply = topTurn && topTurn.reply ? String(topTurn.reply).trim() : "";
@@ -170,7 +199,7 @@
       if (isDesk) haptic([12, 28, 12]);
     }
 
-    if (speaking || busy || activeGesture || searching || isDesk || liveOn) {
+    if (speaking || busy || activeGesture || searching || isDesk || liveOn || live.armPivoting || Math.abs(live.armPanDps) > 4 || Math.abs(live.armTiltDps) > 4) {
       lastActivityAt = performance.now();
     }
 
@@ -725,6 +754,23 @@
     let tCx = 0.5;
     let tCy = 0.49;
 
+    // Synchronize 3D CAD cube directly with physical DJI Osmo Mobile 3 arm (IMU + motor lead-in!)
+    if (!demoMode && live.armConnected) {
+      const deg2rad = Math.PI / 180;
+      // 1. Live motor velocity anticipation (instant 0ms response as soon as motors fire!)
+      const velYaw = Math.max(-0.42, Math.min(0.42, live.armPanDps * 0.0052));
+      const velPitch = Math.max(-0.32, Math.min(0.32, live.armTiltDps * 0.0052));
+      const velBank = Math.max(-0.18, Math.min(0.18, -live.armPanDps * 0.0022));
+
+      // 2. Real physical IMU attitude coupling relative to calibrated neutral face_pose
+      const imuYaw = Math.max(-0.45, Math.min(0.45, live.armRelPanDeg * deg2rad * 0.55));
+      const imuPitch = Math.max(-0.35, Math.min(0.55, live.armRelPitchDeg * deg2rad * 0.72));
+
+      tYaw = (live.faceDetected ? inputX * 0.22 : 0) + imuYaw + velYaw;
+      tPitch = (live.faceDetected ? inputY * 0.16 : 0) + imuPitch + velPitch;
+      tRoll = velBank - inputX * 0.04;
+    }
+
     const gElapsed = (now - anim.gestureStart) * 0.001;
 
     if (live.mode === "focus") {
@@ -734,15 +780,18 @@
       tScale = 0.78;
       tCy = 0.44;
     } else if (live.mode === "desk") {
-      // Shrink cleanly to left side & look down toward the paper!
+      // Shrink cleanly to left side & mirror physical downward desk pitch!
       const narrow = W < 680;
+      const deskPitchRad = !demoMode && live.armConnected
+        ? Math.max(0.20, Math.min(0.58, live.armRelPitchDeg * (Math.PI / 180) * 0.85))
+        : 0.36;
       tYaw = 0.28 + Math.sin(t * 0.8) * 0.04;
-      tPitch = 0.36;
+      tPitch = deskPitchRad;
       tRoll = -0.05;
       tScale = narrow ? 0.001 : 0.46;
       tCx = narrow ? 0.15 : 0.16;
       tCy = 0.52;
-    } else {
+    } else if (demoMode || !live.armConnected) {
       if (live.mood === "think") {
         tYaw = 0.28 + Math.sin(t * 1.4) * 0.05;
         tPitch = -0.22 + Math.cos(t * 1.1) * 0.04;
@@ -762,6 +811,17 @@
         tPitch += Math.sin(t * 4.8) * 0.035;
         tRoll += Math.sin(t * 2.4) * 0.025;
       }
+    } else {
+      // When arm IS physically connected, add only subtle expressive micro-motion on top of real arm pose
+      if (live.mood === "think") {
+        tYaw += 0.18;
+        tPitch -= 0.14;
+        tRoll += 0.07;
+      } else if (live.mood === "curious") {
+        tRoll += 0.18;
+      } else if (live.mood === "speak") {
+        tPitch += Math.sin(t * 4.8) * 0.025;
+      }
     }
 
     const yaw = stepSpring(sp.yaw, tYaw, dt);
@@ -771,10 +831,17 @@
     const cxNorm = stepSpring(sp.centerX, tCx, dt);
     const cyNorm = stepSpring(sp.centerY, tCy, dt);
 
-    // Update live monospace angle readout in top-right HUD
-    const yDeg = (yaw * 180 / Math.PI).toFixed(1).padStart(5, " ");
-    const pDeg = (pitch * 180 / Math.PI).toFixed(1).padStart(5, " ");
-    elPoseTelemetry.textContent = `Y ${yaw >= 0 ? "+" : ""}${yDeg.trim()}° · P ${pitch >= 0 ? "+" : ""}${pDeg.trim()}°`;
+    // Update live monospace angle readout in top-right HUD (shows real ARM IMU when connected!)
+    if (!demoMode && live.armConnected) {
+      const ap = live.armRelPanDeg.toFixed(0);
+      const at = live.armRelPitchDeg.toFixed(0);
+      const spd = Math.round(Math.hypot(live.armPanDps, live.armTiltDps));
+      elPoseTelemetry.textContent = `ARM ΔY ${live.armRelPanDeg >= 0 ? "+" : ""}${ap}° · ΔP ${live.armRelPitchDeg >= 0 ? "+" : ""}${at}° · ${spd}°/s`;
+    } else {
+      const yDeg = (yaw * 180 / Math.PI).toFixed(1).padStart(5, " ");
+      const pDeg = (pitch * 180 / Math.PI).toFixed(1).padStart(5, " ");
+      elPoseTelemetry.textContent = `Y ${yaw >= 0 ? "+" : ""}${yDeg.trim()}° · P ${pitch >= 0 ? "+" : ""}${pDeg.trim()}°`;
+    }
 
     // Autonomous blinking
     anim.blinkTimer -= dt;

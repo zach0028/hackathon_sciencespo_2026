@@ -90,6 +90,7 @@ class StudioRuntime:
         )
         self._load_calibration()
         self._last_motor_cmd: tuple[float, float] = (0.0, 0.0)
+        self._last_body_cmd: tuple[float, float] = (0.0, 0.0)
         self._imu_tick: int = 0
 
         self.pixel_serial: str | None = None
@@ -328,6 +329,7 @@ class StudioRuntime:
         )
         await self._osmo.send_speed(yaw_dps=m_yaw, pitch_dps=m_pitch, roll_dps=0.0, duration_ds=2)
         self._last_motor_cmd = (m_yaw, m_pitch)
+        self._last_body_cmd = (pan_dps, tilt_dps)
         self.osmo_tx_packets += 1
         self.osmo_last_tx = f"imu-servo mY={m_yaw:+.1f} mP={m_pitch:+.1f}"
 
@@ -1500,6 +1502,19 @@ class StudioRuntime:
                 "live_motors": self.arbiter.live_motors,
                 "control_mode": self.arbiter.control_mode,
                 "is_landscape": self._osmo.is_landscape() if self._osmo else None,
+                "pivoting": time.monotonic() < self._hw_busy_until,
+                "face_pose": self.face_pose,
+                "body_cmd": (
+                    {
+                        "pan_dps": round(self._last_body_cmd[0], 1),
+                        "tilt_dps": round(self._last_body_cmd[1], 1),
+                    }
+                    if time.monotonic() < self._hw_busy_until
+                    else {
+                        "pan_dps": round(interp.cmd_yaw_dps, 1),
+                        "tilt_dps": round(interp.cmd_pitch_dps, 1),
+                    }
+                ),
                 "attitude": (
                     {
                         "pitch": round(att.pitch_deg, 1),
