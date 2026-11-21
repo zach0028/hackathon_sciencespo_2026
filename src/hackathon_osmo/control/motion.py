@@ -57,14 +57,14 @@ class OneEuroFilter:
 
 @dataclass
 class PidConfig:
-    kp: float = 78.0
-    kp_yaw: float = 92.0
-    kp_pitch: float = 64.0
-    kd: float = 4.2
-    deadzone: float = 0.05
-    min_move_dps: float = 12.0  # overcomes DJI OM3 motor stiction/deadband immediately
-    max_dps: float = 95.0       # full OM3 CmdId 0x0C envelope (wire cap is 100 deg/s)
-    max_accel_dps2: float = 320.0  # snappy, zero-lag tracking ramps
+    kp: float = 45.0
+    kp_yaw: float = 55.0
+    kp_pitch: float = 30.0
+    kd: float = 3.5
+    deadzone: float = 0.09
+    min_move_dps: float = 0.0
+    max_dps: float = 55.0
+    max_accel_dps2: float = 150.0  # smooth cinema ramps (no oscillation/overshoot!)
     target_y: float = -0.08  # slight headroom (rule of thirds)
     # Calibrated reference mapping (measured at cal_rotate_deg / cal_mirror)
     cal_rotate_deg: int = 0
@@ -300,12 +300,12 @@ class MotionArbiter:
         dz = self.config.deadzone
         if abs(err) <= dz:
             return 0.0
-        # Responsive linear-progressive curve + minimum torque floor to beat OM3 motor stiction!
+        # Soft-knee deadzone + slightly progressive nonlinear curve (smooth near center, zero oscillation!)
         mag = abs(err) - dz
-        err_eff = math.copysign(mag, err)
+        err_eff = math.copysign(mag ** 1.12, err)
         d_err = max(-3.0, min(3.0, (err - prev_err) / max(1e-3, dt)))
         out = kp * err_eff + self.config.kd * d_err
-        if abs(out) < self.config.min_move_dps:
+        if self.config.min_move_dps > 0.0 and abs(out) < self.config.min_move_dps:
             out = math.copysign(self.config.min_move_dps, err)
         return max(-self.config.max_dps, min(self.config.max_dps, out))
 
@@ -319,7 +319,7 @@ class MotionArbiter:
         first_dir = +1.0 if self._last_exit_x >= 0 else -1.0
         dir_label = "droite" if first_dir > 0 else "gauche"
         opp_label = "gauche" if first_dir > 0 else "droite"
-        sweep_speed = 48.0
+        sweep_speed = 32.0
 
         # Gently pull vertical tilt slightly back toward horizon if face exited high/low
         pitch_nudge = max(-10.0, min(10.0, self._last_exit_y * 12.0)) if elapsed < 1.2 else 0.0

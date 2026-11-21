@@ -30,17 +30,18 @@ class WatchdogDecision:
 class MotorWatchdog:
     """Pure, deterministic motor resilience state machine (unit-testable without BLE)."""
 
-    # Stall relief parameters (no fixed angle clamps — purely IMU-feedback driven!)
-    stall_cmd_threshold_dps: float = 22.0
+    # Stall relief parameters (conservative > 3.2s because OM3 IMU notifies at ~1 Hz!)
+    stall_cmd_threshold_dps: float = 35.0
     stall_min_delta_deg: float = 1.2
-    stall_trigger_s: float = 1.4
-    stall_backoff_s: float = 2.5
+    stall_trigger_s: float = 3.2
+    stall_backoff_s: float = 2.0
 
     # Anti-sleep BLE keepalive intervals
     keepalive_speed_interval_s: float = 6.0
     keepalive_resume_interval_s: float = 45.0
 
-    # Limp / standby detection & bounded recovery
+    # Limp / standby detection (passive alert only by default — never surprise-recenter mid-tracking!)
+    auto_wake_enabled: bool = False
     limp_drop_delta_deg: float = 22.0
     limp_pitch_floor_deg: float = -30.5
     max_wake_attempts: int = 2
@@ -219,7 +220,7 @@ class MotorWatchdog:
                 self.motor_state = "active"
                 alert = "Moteurs DJI OM3 réveillés et actifs !"
 
-        if limp_detected:
+        if limp_detected and self.auto_wake_enabled:
             if t < self._thermal_until_t:
                 # Cool-down active: don't hammer overheated motors, keep Studio/voice alive
                 self.motor_state = "thermal_protection"

@@ -60,7 +60,7 @@ def test_watchdog_stall_relief_backs_off_only_blocked_direction() -> None:
 
 
 def test_watchdog_detects_sudden_limp_drop_and_bounds_wake_attempts() -> None:
-    wd = MotorWatchdog(max_wake_attempts=2, wake_retry_interval_s=6.0, thermal_cooldown_s=25.0)
+    wd = MotorWatchdog(auto_wake_enabled=True, max_wake_attempts=2, wake_retry_interval_s=6.0, thermal_cooldown_s=25.0)
 
     # Normal upright pose
     d1 = wd.evaluate(motor_yaw=0.0, motor_pitch=0.0, pitch_deg=5.0, roll_deg=0.0, now=100.0)

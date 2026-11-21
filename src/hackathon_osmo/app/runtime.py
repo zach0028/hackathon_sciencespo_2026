@@ -176,7 +176,7 @@ class StudioRuntime:
             cfg.kp = round((cfg.kp_yaw + cfg.kp_pitch) / 2.0, 1)
             cfg.kd = round(float(cal.get("kd", 3.6)), 1)
             cfg.deadzone = float(cal.get("deadzone", 0.09))
-            cfg.max_dps = float(cal.get("max_dps", 90.0))
+            cfg.max_dps = float(cal.get("max_dps", 55.0))
             if isinstance(cal.get("face_pose"), dict):
                 self.face_pose.update(cal["face_pose"])
             if isinstance(cal.get("desk_pose"), dict):
