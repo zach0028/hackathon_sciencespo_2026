@@ -51,23 +51,41 @@ def enhance_document_clarity(bgr: np.ndarray, amount: float = 0.35) -> np.ndarra
     return cv2.addWeighted(bgr, 1.0 + amount, blurred, -amount, 0)
 
 
+def _roi_paper_metrics(bgr: np.ndarray, x: float, y: float, w: float, h: float) -> tuple[float, float]:
+    """Return (mean_luma, mean_saturation) in HSV (0..255) for a normalized ROI.
+
+    Used to distinguish bright white/cream paper (luma ~165..240, sat <95) from dark
+    laptops/keyboards/trackpads/shadows (luma ~45..125) that VNDetectRectanglesRequest flags.
+    """
+    ih, iw = bgr.shape[:2]
+    x1 = max(0, min(iw - 1, int(x * iw)))
+    y1 = max(0, min(ih - 1, int(y * ih)))
+    x2 = max(x1 + 1, min(iw, int((x + w) * iw)))
+    y2 = max(y1 + 1, min(ih, int((y + h) * ih)))
+    roi = bgr[y1:y2, x1:x2]
+    if roi.size == 0:
+        return 0.0, 255.0
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    return float(hsv[:, :, 2].mean()), float(hsv[:, :, 1].mean())
+
+
 def prepare_desk_reading_image(
     bgr: np.ndarray,
     *,
     rotate_deg: int = 270,
     sheet: SheetDetection | None = None,
     auto_crop: bool = True,
-    max_crop_area: float = 0.36,
-    crop_margin: float = 0.28,
+    max_crop_area: float = 0.28,
+    crop_margin: float = 0.36,
     enhance: bool = True,
 ) -> tuple[np.ndarray, bool]:
     """Prepare a desk camera frame for optimal Vision LLM handwriting & card reading.
 
-    1. On wide/1x shots where the sheet occupies a modest portion of the desk
+    1. On wide shots where the sheet occupies a small portion of the desk
        (area <= max_crop_area), smart-crops around the detected sheet with generous
-       margin so adjacent pages & cards stay visible while stripping empty desk/laptop.
-       On already-zoomed shots (>= 1.5x or area > max_crop_area), preserves full frame
-       so edge words are never clipped.
+       margin (36%) so both pages of an open notebook stay visible while stripping
+       empty desk/laptop. On close/2-page spreads (area > max_crop_area) or zoomed
+       shots (>= 1.5x), preserves full frame so adjacent pages are NEVER clipped.
     2. Rotates upright (default 270° = 90° CCW for Osmo positioned to the right of user).
     3. Applies subtle unsharp clarity boost for pen ink & small printed text.
 
@@ -83,13 +101,12 @@ def prepare_desk_reading_image(
         and 0.05 <= sheet.area_ratio <= max_crop_area
     ):
         h, w = bgr.shape[:2]
-        pad_x = max(sheet.w * crop_margin, 0.09)
-        pad_y = max(sheet.h * crop_margin, 0.09)
+        pad_x = max(sheet.w * crop_margin, 0.12)
+        pad_y = max(sheet.h * crop_margin, 0.12)
         x1 = max(0, int((sheet.x - pad_x) * w))
         y1 = max(0, int((sheet.y - pad_y) * h))
         x2 = min(w, int((sheet.x + sheet.w + pad_x) * w))
         y2 = min(h, int((sheet.y + sheet.h + pad_y) * h))
-        # Ensure crop keeps enough pixels (at least 480px on major side)
         if (x2 - x1) >= 420 and (y2 - y1) >= 420:
             img = bgr[y1:y2, x1:x2]
             cropped = True
@@ -101,6 +118,54 @@ def prepare_desk_reading_image(
         img = enhance_document_clarity(img, amount=0.35)
 
     return img, cropped
+
+
+def slice_desk_spread_tiles(
+    bgr: np.ndarray,
+    *,
+    rotate_deg: int = 270,
+    enhance: bool = True,
+) -> list[tuple[str, np.ndarray]]:
+    """Produce overlapping razor-sharp upright tiles (LEFT page + RIGHT page) from a 4K/HD desk frame.
+
+    Lets the Vision LLM read BOTH pages of an open notebook in a SINGLE tool call (zero extra
+    gimbal movements, zero risk of losing the page, 2x effective pixel density per page).
+    """
+    upright = rotate_image(bgr, rotate_deg) if rotate_deg % 360 != 0 else bgr
+    if enhance:
+        upright = enhance_document_clarity(upright, amount=0.40)
+
+    # Locate the bright paper band vertically & horizontally so tiles focus on the notebook spread
+    hsv = cv2.cvtColor(upright, cv2.COLOR_BGR2HSV)
+    paper_mask = (hsv[:, :, 2] >= 145) & (hsv[:, :, 1] <= 105)
+    H, W = upright.shape[:2]
+    ys, xs = np.where(paper_mask)
+
+    if len(xs) > int(H * W * 0.06):
+        # Use 2nd..98th percentile to ignore stray white desk edges/cables
+        x1 = max(0, int(np.percentile(xs, 2)) - int(W * 0.03))
+        x2 = min(W, int(np.percentile(xs, 98)) + int(W * 0.03))
+        y1 = max(0, int(np.percentile(ys, 2)) - int(H * 0.03))
+        y2 = min(H, int(np.percentile(ys, 98)) + int(H * 0.03))
+        if (x2 - x1) >= int(W * 0.35) and (y2 - y1) >= int(H * 0.25):
+            spread = upright[y1:y2, x1:x2]
+        else:
+            spread = upright
+    else:
+        spread = upright
+
+    sh, sw = spread.shape[:2]
+    # Split into 2 generous overlapping vertical halves (left 0..58%, right 42..100%)
+    # Works for open 2-page notebooks in portrait or landscape spread!
+    left_end = min(sw, int(sw * 0.58))
+    right_start = max(0, int(sw * 0.42))
+    left_tile = spread[:, :left_end]
+    right_tile = spread[:, right_start:]
+
+    return [
+        ("PAGE GAUCHE HD (redressée)", left_tile),
+        ("PAGE DROITE HD (redressée)", right_tile),
+    ]
 
 
 @dataclass
@@ -227,25 +292,50 @@ class AppleVisionSheetDetector:
             vision_ms=round(elapsed_ms, 1),
         )
 
-        # Prefer neural document segmentation when confident (>= 0.45) and reasonable area (>= 0.04)
+        # Prefer neural document segmentation on BRIGHT PAPER ONLY (rejects dark MacBooks/keyboards/shadows!)
         best_doc = None
+        best_doc_score = -1.0
         if doc_req is not None:
             for obs in doc_req.results() or []:
                 bb = obs.boundingBox()
-                area = float(bb.size.width) * float(bb.size.height)
+                ox = float(bb.origin.x)
+                ow = float(bb.size.width)
+                oh = float(bb.size.height)
+                oy = 1.0 - float(bb.origin.y) - oh
+                area = ow * oh
                 conf = float(obs.confidence())
-                if conf >= 0.45 and area >= 0.04:
-                    if best_doc is None or conf > float(best_doc.confidence()):
+                if area < 0.04:
+                    continue
+                luma, sat = _roi_paper_metrics(bgr_frame, ox, oy, ow, oh)
+                # Paper luminance gate: MacBook keyboard/trackpad <= 125; cream/white paper ~165..240
+                if luma < 140.0 or sat > 115.0:
+                    continue
+                if conf >= 0.35 or (luma >= 170.0 and area >= 0.06):
+                    score = area * (luma / 255.0) * (0.5 + conf)
+                    if score > best_doc_score:
+                        best_doc_score = score
                         best_doc = obs
 
         best_rect = None
+        best_rect_score = -1.0
         if best_doc is None:
-            rects = list(rect_req.results() or [])
-            if rects:
-                best_rect = max(
-                    rects,
-                    key=lambda r: float(r.boundingBox().size.width) * float(r.boundingBox().size.height),
-                )
+            for obs in rect_req.results() or []:
+                bb = obs.boundingBox()
+                ox = float(bb.origin.x)
+                ow = float(bb.size.width)
+                oh = float(bb.size.height)
+                oy = 1.0 - float(bb.origin.y) - oh
+                area = ow * oh
+                if area < 0.04:
+                    continue
+                luma, sat = _roi_paper_metrics(bgr_frame, ox, oy, ow, oh)
+                # Reject dark metallic/grey rectangles (MacBook keyboard/trackpad/pants)!
+                if luma < 145.0 or sat > 110.0:
+                    continue
+                score = area * (luma / 255.0)
+                if score > best_rect_score:
+                    best_rect_score = score
+                    best_rect = obs
 
         chosen = best_doc or best_rect
         if chosen is not None:

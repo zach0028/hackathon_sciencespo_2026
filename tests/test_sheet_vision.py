@@ -11,9 +11,11 @@ from hackathon_osmo.ai.live_brain import prepare_vision_jpeg
 from hackathon_osmo.hardware.pixel_camera import PixelCameraStream
 from hackathon_osmo.vision.sheet import (
     SheetDetection,
+    _roi_paper_metrics,
     compute_sharpness,
     prepare_desk_reading_image,
     rotate_image,
+    slice_desk_spread_tiles,
 )
 
 
@@ -107,4 +109,26 @@ def test_pixel_oled_face_assets_exist_and_serve_cleanly() -> None:
     assert 'id="face-canvas"' in html
     assert 'id="desk-layer"' in html
     assert 'id="focus-layer"' in html
+
+
+def test_roi_paper_metrics_separates_cream_paper_from_dark_laptop() -> None:
+    frame = np.full((400, 600, 3), 65, dtype=np.uint8)  # dark laptop / desk
+    frame[180:360, 120:480] = (205, 225, 235)  # warm cream paper in BGR
+    luma_dark, _ = _roi_paper_metrics(frame, 0.0, 0.0, 0.5, 0.35)
+    luma_paper, sat_paper = _roi_paper_metrics(frame, 0.25, 0.50, 0.5, 0.35)
+    assert luma_dark < 120.0
+    assert luma_paper > 180.0
+    assert sat_paper < 80.0
+
+
+def test_slice_desk_spread_tiles_produces_overlapping_left_and_right_pages() -> None:
+    spread = _make_synthetic_page(2688, 1512)
+    tiles = slice_desk_spread_tiles(spread, rotate_deg=270, enhance=True)
+    assert len(tiles) == 2
+    assert "GAUCHE" in tiles[0][0]
+    assert "DROITE" in tiles[1][0]
+    # Both tiles should be crisp high-res upright regions
+    for _lbl, img in tiles:
+        assert img.shape[0] >= 600 and img.shape[1] >= 400
+
 

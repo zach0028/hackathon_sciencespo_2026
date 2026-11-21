@@ -36,6 +36,7 @@ from hackathon_osmo.vision.sheet import (
     SheetDetection,
     compute_sharpness,
     prepare_desk_reading_image,
+    slice_desk_spread_tiles,
 )
 
 
@@ -678,18 +679,21 @@ class StudioRuntime:
         zoom: float | None = None,
         auto_target: bool = True,
         ultra_hd: bool = False,
+        scan_pages: bool = False,
     ) -> dict[str, Any]:
-        """Full Desk Reading transition (connected to IMU pan/pitch + Apple Vision Document Segmentation):
+        """Full Desk Reading transition (connected to IMU pan/pitch + Bright-Paper Vision):
         1. If not already on desk: geodesic left Pan pivot + overlapped downward Pitch servo in parallel with rear HD/4K startup
         2. If already on desk: zero pivot, zero camera restart unless zoom or 4K actually changed!
-        3. Autofocus Laplacian sharpness gate -> 6ms Apple Vision document segmentation -> mechanical centering -> smart upright crop
-        4. Returns razor-sharp upright HD image (1600px q=88, auto-oriented 90° CCW) + pre-extracted OCR lines.
+        3. Autofocus Laplacian sharpness gate -> bright-paper Vision segmentation (ignores MacBook!) -> mechanical centering
+        4. When scan_pages=True: switches to 4K 1.0x and slices BOTH pages of an open spread into razor-sharp
+           overlapping upright HD tiles ([PAGE GAUCHE HD] + [PAGE DROITE HD]) in ONE single tool call!
         """
         # Desk sheet is ALWAYS downward (+30°..+65°, calibrated mean +49.3° on OM3 IMU) — never upward/ceiling!
         raw_target_pitch = float(self.desk_pose.get("pitch_deg", 49.3))
         target_pitch = max(30.0, min(65.0, abs(raw_target_pitch)))
         pivot_deg = float(self.desk_pose.get("pivot_deg", 135.0))
-        req_w, req_h = (3840, 2160) if ultra_hd else (
+        use_4k = ultra_hd or scan_pages
+        req_w, req_h = (3840, 2160) if use_4k else (
             int(self.desk_pose.get("width", 2688)),
             int(self.desk_pose.get("height", 1512)),
         )
@@ -703,10 +707,13 @@ class StudioRuntime:
         att = self._osmo.last_attitude if (self._osmo and self.osmo_connected) else None
         already_on_desk = self.facing == "back" and att is not None and abs(att.pitch_deg - target_pitch) < 18.0
 
-        # Preserve current zoom when already on desk and caller asks for zoom=None (0)
-        desired_zoom = float(zoom) if zoom is not None else (
-            self.camera_zoom if already_on_desk else float(self.desk_pose.get("default_zoom", 1.0))
-        )
+        # For 2-page spread scan, prefer 1.0x 4K unless caller explicitly asked for another zoom
+        if scan_pages and zoom is None:
+            desired_zoom = 1.0
+        else:
+            desired_zoom = float(zoom) if zoom is not None else (
+                self.camera_zoom if already_on_desk else float(self.desk_pose.get("default_zoom", 1.0))
+            )
 
         if not already_on_desk and self.hilight.connected:
             self.hilight.start_reaction("sheet_search")
@@ -748,7 +755,7 @@ class StudioRuntime:
                 zoom=desired_zoom,
                 width=req_w,
                 height=req_h,
-                bitrate=20_000_000 if ultra_hd else int(self.desk_pose.get("bitrate", 16_000_000)),
+                bitrate=20_000_000 if use_4k else int(self.desk_pose.get("bitrate", 16_000_000)),
                 wait_frame=True,
             )
         )
@@ -825,7 +832,6 @@ class StudioRuntime:
         if self.hilight.connected:
             self.hilight.start_reaction("sheet_locked" if sheet.found else "desk")
 
-        jpeg_hd = self._get_latest_frame_jpeg(high_res=True, frame_bgr=sharp_frame)
         att_now = self._osmo.last_attitude if self._osmo else None
         res: dict[str, Any] = {
             "ok": True,
@@ -834,6 +840,7 @@ class StudioRuntime:
             "resolution": f"{self.width}x{self.height}",
             "zoom": auto_zoom_applied,
             "sharpness": sharpness,
+            "scan_pages": scan_pages,
             "sheet_detected": sheet.found,
             "sheet_source": sheet.source,
             "sheet_has_text": sheet.has_text,
@@ -841,14 +848,39 @@ class StudioRuntime:
             "imu_pan_roll": round(att_now.roll_deg, 1) if att_now else (round(final_pan, 1) if final_pan is not None else None),
             "imu_pitch": round(att_now.pitch_deg, 1) if att_now else (round(final_pitch, 1) if final_pitch is not None else None),
         }
-        if jpeg_hd:
-            res["_images"] = [
-                {
-                    "label": f"Feuille redressée HD ({self.width}x{self.height}, zoom {self.camera_zoom:.2f}x, netteté={sharpness:.0f})",
-                    "jpeg": jpeg_hd,
-                    "detail": "high",
-                }
-            ]
+
+        if scan_pages and sharp_frame is not None:
+            ocr_rot = int(self.desk_pose.get("ocr_rotate_deg", 270))
+            tiles = await asyncio.to_thread(
+                slice_desk_spread_tiles,
+                sharp_frame,
+                rotate_deg=ocr_rot,
+                enhance=True,
+            )
+            images_out: list[dict[str, Any]] = []
+            for lbl, tile_bgr in tiles:
+                th, tw = tile_bgr.shape[:2]
+                sc = min(1.0, 1500.0 / max(1, max(th, tw)))
+                t_resized = (
+                    cv2.resize(tile_bgr, (max(1, int(tw * sc)), max(1, int(th * sc))), interpolation=cv2.INTER_AREA)
+                    if sc < 0.99
+                    else tile_bgr
+                )
+                ok_enc, enc = cv2.imencode(".jpg", t_resized, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+                if ok_enc:
+                    images_out.append({"label": lbl, "jpeg": enc.tobytes(), "detail": "high"})
+            if images_out:
+                res["_images"] = images_out
+        else:
+            jpeg_hd = self._get_latest_frame_jpeg(high_res=True, frame_bgr=sharp_frame)
+            if jpeg_hd:
+                res["_images"] = [
+                    {
+                        "label": f"Feuille redressée HD ({self.width}x{self.height}, zoom {self.camera_zoom:.2f}x, netteté={sharpness:.0f})",
+                        "jpeg": jpeg_hd,
+                        "detail": "high",
+                    }
+                ]
         return res
 
     async def set_camera_zoom(self, zoom: float, *, capture_after: bool = True) -> dict[str, Any]:
@@ -973,10 +1005,12 @@ class StudioRuntime:
             zoom = float(z_raw) if (z_raw is not None and float(z_raw) > 0) else None
             retarget = bool(args.get("retarget_sheet", args.get("auto_target", True)))
             ultra_hd = bool(args.get("ultra_hd", False))
+            scan_pages = bool(args.get("scan_pages", False))
             return await self.enter_desk_reading_mode(
                 zoom=zoom,
                 auto_target=retarget,
                 ultra_hd=ultra_hd,
+                scan_pages=scan_pages,
             )
 
         # --- 3. move_arm (relative pan/tilt OR panoramic 3-photo room scan) ---
@@ -1028,26 +1062,49 @@ class StudioRuntime:
 
             pan_deg = float(args.get("pan_deg", 0.0))
             tilt_deg = float(args.get("tilt_deg", 0.0))
-            pan_done, tilt_done, dur_s = await self.arbiter.move_relative_deg(
+            is_desk = self.facing == "back"
+
+            # Empirically verified on Pixel 11 Pro rear camera (session 13-19-15 Turns 8-9):
+            # positive body tilt lowers IMU pitch (UP), negative body tilt raises IMU pitch (DOWN).
+            # Invert in desk mode so tool contract (tilt_deg > 0 = DOWN toward desk, < 0 = UP) is exact,
+            # and clamp IMU pitch to [+30°, +65°] so desk adjustments NEVER drift toward the ceiling!
+            actual_tilt = tilt_deg
+            if is_desk:
+                att_cur = self._osmo.last_attitude if self._osmo else None
+                if att_cur is not None:
+                    cur_p = att_cur.pitch_deg
+                    target_p = max(30.0, min(65.0, cur_p + tilt_deg))
+                    tilt_deg = round(target_p - cur_p, 1)
+                actual_tilt = -tilt_deg
+
+            pan_done, _tilt_body, dur_s = await self.arbiter.move_relative_deg(
                 pan_deg=pan_deg,
-                tilt_deg=tilt_deg,
+                tilt_deg=actual_tilt,
                 speed_dps=speed_dps,
                 hold_after=True,
             )
-            await asyncio.sleep(0.25)
-            is_desk = self.facing == "back"
-            jpeg = self._get_latest_frame_jpeg(high_res=is_desk)
+            sharp_frame = None
+            sharpness = 0.0
+            if is_desk:
+                sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.45, min_wait_s=0.14)
+            else:
+                await asyncio.sleep(0.22)
+
+            jpeg = self._get_latest_frame_jpeg(high_res=is_desk, frame_bgr=sharp_frame)
+            att_after = self._osmo.last_attitude if self._osmo else None
             res: dict[str, Any] = {
                 "ok": True,
                 "moved_pan_deg": pan_done,
-                "moved_tilt_deg": tilt_done,
+                "moved_tilt_deg": tilt_deg,
                 "duration_s": dur_s,
+                "imu_pitch": round(att_after.pitch_deg, 1) if att_after else None,
+                "sharpness": sharpness if is_desk else None,
                 "face_detected": self.arbiter.latest.face_detected,
             }
             if jpeg:
                 res["_images"] = [
                     {
-                        "label": f"Vue après rotation bras (pan={pan_done:+.0f}°, tilt={tilt_done:+.0f}°)",
+                        "label": f"Vue après rotation bras (pan={pan_done:+.0f}°, tilt={tilt_deg:+.0f}°)",
                         "jpeg": jpeg,
                         "detail": "high" if is_desk else "low",
                     }

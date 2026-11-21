@@ -78,14 +78,17 @@ Règles strictes :
 1. Français oral naturel, direct, concis (1 à 2 phrases max, sans markdown, sans listes).
 2. VÉRITÉ TERRAIN CAPTEURS (CRITIQUE) :
    - Ne dis JAMAIS « je te vois » ou « je suis sur ton visage » si [Capteurs] ou le retour de look_at_user indique face_detected=False ! Dis honnêtement que tu ne le vois pas encore (ou lance look_at_user(search_if_missing=true) pour le chercher).
-   - N'invente jamais un mot illisible sur une feuille : les photos bureau sont déjà redressées à l'endroit et recadrées sur le cahier ; si un détail reste vraiment minuscule, zoome avec look_at_desk(zoom=2.0 ou 3.0, ultra_hd=true, retarget_sheet=false).
-3. PRIORITÉ ET USAGE DES 5 OUTILS (évite tout appel inutile pour garder une latence minimale) :
-   - PRIORITÉ 1 — Réponse directe SANS outil : si tu es DÉJÀ dans le bon mode (ex. mode_bureau=True avec image HD redressée déjà fournie dans ce message) et que Zach te demande de lire, corriger ou analyser ce qui est visible -> réponds DIRECTEMENT sans rappeler look_at_desk !
-   - PRIORITÉ 2 — look_at_desk(zoom, ultra_hd, retarget_sheet) : UNIQUEMENT pour (a) passer du mode dialogue au mode feuille caméra arrière (pivot géodésique gauche + inclinaison BAS +49° + autofocus net + détection feuille + recadrage redressé + ring-light), OU (b) changer explicitement d'optique/zoom (0.51 / 1.0 / 2.0 / 3.0 / 5.0) ou passer en 4K, OU (c) recentrer sur une nouvelle feuille. Une feuille est TOUJOURS vers le BAS sur le bureau, jamais au plafond !
-   - PRIORITÉ 3 — look_at_user(search_if_missing) : pour revenir vers Zach (caméra avant + retour tête + vérification Apple Vision + réactivation AUTOMATIQUE du suivi visage follow_face). N'appelle JAMAIS set_tracking(follow_face) après look_at_user : le suivi visage est déjà actif dès le retour !
-   - PRIORITÉ 4 — move_arm(pan_deg, tilt_deg, scan_room) : pour ajuster manuellement l'angle du bras (pan < 0 GAUCHE, pan > 0 DROITE, tilt < 0 HAUT, tilt > 0 BAS) ou explorer la pièce (scan_room=true).
-   - PRIORITÉ 5 — express(gesture, led) & set_tracking(mode) : en mode dialogue, accompagne tes réponses d'un geste + LED en 1 seul appel, ou fige/réactive le suivi visage uniquement si tu es DÉJÀ en caméra avant.
-   - PRIORITÉ 6 — remember(action, category, content, query) : mémoire locale persistante SQLite. Appelle save UNIQUEMENT quand Zach demande explicitement de retenir/noter une info ou après avoir extrait une donnée clé d'une feuille (contact, tâche, préférence) ; appelle search pour retrouver une vieille note/feuille absente du contexte [Mémoire] ; appelle forget pour effacer.
+   - N'invente jamais un mot illisible sur une feuille : les photos bureau sont déjà redressées à l'endroit. NE DEMANDE JAMAIS à Zach de bouger ou tourner son cahier avant d'avoir essayé look_at_desk(zoom=1.0, ultra_hd=true, retarget_sheet=true, scan_pages=true) (qui découpe automatiquement la page gauche + la page droite en 4K HD en 1 seul appel !) ou un zoom optique 2.0/3.0 !
+3. PRIORITÉ ET USAGE DES 6 OUTILS (évite tout appel inutile pour garder une latence minimale) :
+   - PRIORITÉ 1 — Réponse directe SANS outil : si tu es DÉJÀ dans le bon mode (ex. mode_bureau=True avec image HD redressée déjà fournie dans ce message) et que tout est déjà lisible -> réponds DIRECTEMENT sans outil !
+   - PRIORITÉ 2 — look_at_desk(zoom, ultra_hd, retarget_sheet, scan_pages) :
+     * Pour lire un cahier ouvert (2 pages) ou des petites notes pâles : appelle DIRECTEMENT scan_pages=true, ultra_hd=true (retourne [PAGE GAUCHE HD] + [PAGE DROITE HD] en 4K redressées en 1 seul appel rapide, sans risque de perdre la page !).
+     * Pour un détail minuscule (carte de visite) : zoom=2.0 ou 3.0, ultra_hd=true, scan_pages=false.
+     * Une feuille est TOUJOURS vers le BAS sur le bureau, jamais au plafond !
+   - PRIORITÉ 3 — look_at_user(search_if_missing) : pour revenir vers Zach (caméra avant + retour tête + vérification Apple Vision + réactivation AUTOMATIQUE du suivi visage follow_face). N'appelle JAMAIS set_tracking(follow_face) après look_at_user !
+   - PRIORITÉ 4 — move_arm(pan_deg, tilt_deg, scan_room) : pour ajuster finement l'angle du bras (pan < 0 GAUCHE, pan > 0 DROITE, tilt < 0 HAUT, tilt > 0 BAS) ou explorer la pièce (scan_room=true).
+   - PRIORITÉ 5 — express(gesture, led) & set_tracking(mode) : en mode dialogue, accompagne tes réponses d'un geste + LED en 1 seul appel.
+   - PRIORITÉ 6 — remember(action, category, content, query) : mémoire locale persistante SQLite (appelable en PARALLÈLE avec look_at_desk / look_at_user !). Utilise save pour mémoriser préférences/faits/bilans demandés par Zach, search pour retrouver une ancienne note, forget pour supprimer.
 """
 
 ROBOT_TOOLS: list[dict[str, Any]] = [
@@ -124,10 +127,14 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
                 },
                 "retarget_sheet": {
                     "type": "boolean",
-                    "description": "true pour détecter la feuille et recentrer mécaniquement le bras dessus ; false pour juste changer le zoom sans bouger le bras.",
+                    "description": "true pour détecter la feuille (papier clair) et recentrer mécaniquement le bras dessus ; false pour juste changer le zoom sans bouger le bras.",
+                },
+                "scan_pages": {
+                    "type": "boolean",
+                    "description": "true pour capturer en 4K et découper automatiquement les 2 pages (PAGE GAUCHE HD + PAGE DROITE HD) d'un cahier ouvert en 1 seul appel (recommandé pour lire tout un cahier ou des notes petites).",
                 },
             },
-            "required": ["zoom", "ultra_hd", "retarget_sheet"],
+            "required": ["zoom", "ultra_hd", "retarget_sheet", "scan_pages"],
             "additionalProperties": False,
         },
     },
@@ -369,6 +376,7 @@ class OpenAILiveBrain:
     _seen_event_ids: deque[str] = field(default_factory=lambda: deque(maxlen=256))
     _logged_event_types: set[str] = field(default_factory=set)
     _active_delegations: set[asyncio.Task[None]] = field(default_factory=set)
+    _brain_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def api_key(self) -> str:
@@ -885,6 +893,25 @@ class OpenAILiveBrain:
         if not self.api_key:
             raise RuntimeError("OPENAI_API_KEY manquante dans .env")
 
+        # Serialize turns so overlapping voice delegations NEVER collide on previous_response_id or motors!
+        async with self._brain_lock:
+            return await self._ask_brain_locked(
+                user_text,
+                include_recent_history=include_recent_history,
+                speak_via_live=speak_via_live,
+                delegation_id=delegation_id,
+                speech_to_del_ms=speech_to_del_ms,
+            )
+
+    async def _ask_brain_locked(
+        self,
+        user_text: str,
+        *,
+        include_recent_history: bool = False,
+        speak_via_live: bool = False,
+        delegation_id: str | None = None,
+        speech_to_del_ms: float | None = None,
+    ) -> BrainTurnResult:
         self.busy = True
         t0 = time.monotonic()
         tools_called: list[str] = []
@@ -970,9 +997,9 @@ class OpenAILiveBrain:
 
             reply_text, calls = extract_responses_text_and_calls(data)
 
-            # Native tool execution loop (up to 2 rounds; zero extra round if text + side-effect tools both arrived)
+            # Native tool execution loop (up to 3 rounds so visual scan + zoom + remember never gets cut off!)
             rounds = 0
-            while calls and rounds < 2:
+            while calls and rounds < 3:
                 rounds += 1
                 tool_outputs: list[dict[str, Any]] = []
                 need_followup_for_info = False
@@ -1061,7 +1088,7 @@ class OpenAILiveBrain:
                     "previous_response_id": self._previous_response_id,
                     "input": tool_outputs,
                     "tools": ROBOT_TOOLS,
-                    "tool_choice": "none" if rounds >= 2 else "auto",
+                    "tool_choice": "none" if rounds >= 3 else "auto",
                     "max_output_tokens": 240,
                     "store": True,
                 }
