@@ -49,8 +49,8 @@ class StudioRuntime:
             "pan_roll_deg": 179.3,
         }
         self.desk_pose: dict[str, Any] = {
-            "pitch_deg": 53.6,
-            "pan_roll_deg": -64.4,
+            "pitch_deg": 49.3,
+            "pan_roll_deg": -46.7,
             "pivot_deg": 180.0,
             "width": 2688,
             "height": 1512,
@@ -525,7 +525,9 @@ class StudioRuntime:
         3. Apple Vision sheet/text detection -> mechanical centering -> smart optical zoom (0.51x..5x)
         4. Returns razor-sharp HD image (up to 2048px) + pre-extracted OCR lines.
         """
-        target_pitch = float(self.desk_pose.get("pitch_deg", 53.6))
+        # Desk sheet is ALWAYS downward (+30°..+65°, calibrated mean +49.3° on OM3 IMU) — never upward/ceiling!
+        raw_target_pitch = float(self.desk_pose.get("pitch_deg", 49.3))
+        target_pitch = max(30.0, min(65.0, abs(raw_target_pitch)))
         pivot_deg = float(self.desk_pose.get("pivot_deg", 180.0))
         req_w, req_h = (3840, 2160) if ultra_hd else (
             int(self.desk_pose.get("width", 2688)),
