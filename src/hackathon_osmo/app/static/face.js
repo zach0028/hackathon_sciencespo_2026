@@ -1214,10 +1214,10 @@
     // Synchronize 3D CAD cube directly with physical DJI Osmo Mobile 3 arm (IMU + motor lead-in!)
     if (!demoMode && live.armConnected) {
       const deg2rad = Math.PI / 180;
-      // 1. Live motor velocity anticipation (instant 0ms response as soon as motors fire!)
-      const velYaw = Math.max(-0.42, Math.min(0.42, live.armPanDps * 0.0052));
-      const velPitch = Math.max(-0.32, Math.min(0.32, live.armTiltDps * 0.0052));
-      const velBank = Math.max(-0.18, Math.min(0.18, -live.armPanDps * 0.0022));
+      // 1. Live motor velocity anticipation (pronounced 0ms kinetic follow-through!)
+      const velYaw = Math.max(-0.56, Math.min(0.56, live.armPanDps * 0.0068));
+      const velPitch = Math.max(-0.46, Math.min(0.46, live.armTiltDps * 0.0068));
+      const velBank = Math.max(-0.26, Math.min(0.26, -live.armPanDps * 0.0030));
 
       // 2. Real physical IMU attitude coupling relative to calibrated neutral face_pose
       const imuYaw = Math.max(-0.45, Math.min(0.45, live.armRelPanDeg * deg2rad * 0.55));
@@ -1311,42 +1311,57 @@
         tPitch = 0.12 + live.drowsyLevel * 0.08;
         tScale = 1.0 - live.drowsyLevel * 0.12;
       } else if (live.mood === "yes") {
-        tPitch = 0.06 + Math.sin(gElapsed * 9.5) * 0.24 * Math.exp(-gElapsed * 0.35);
+        tPitch = 0.08 + Math.sin(gElapsed * 10.0) * 0.34 * Math.exp(-gElapsed * 0.32);
+        tScale = 1.07;
       } else if (live.mood === "no") {
-        tYaw = Math.sin(gElapsed * 11.0) * 0.34 * Math.exp(-gElapsed * 0.35);
+        tYaw = Math.sin(gElapsed * 11.5) * 0.46 * Math.exp(-gElapsed * 0.32);
+        tRoll = -Math.sin(gElapsed * 11.5) * 0.10 * Math.exp(-gElapsed * 0.32);
       } else if (live.mood === "curious") {
-        tYaw = -0.22;
-        tPitch = -0.06;
-        tRoll = 0.20;
+        tYaw = -0.28;
+        tPitch = -0.12;
+        tRoll = 0.32;
+        tScale = 1.05;
       } else if (live.mood === "search") {
         tYaw = Math.sin(t * 2.2) * 0.56;
         tPitch = 0.04 + Math.sin(t * 4.4) * 0.05;
       } else if (live.mood === "speak") {
-        tPitch += Math.sin(t * 4.8) * 0.035;
-        tRoll += Math.sin(t * 2.4) * 0.025;
+        tPitch += Math.sin(t * 4.8) * 0.05;
+        tRoll += Math.sin(t * 2.4) * 0.04;
       }
     } else {
-      // When arm IS physically connected, layer subtle organic micro-states on top of real arm pose
-      if (live.mood === "attentive") {
-        tScale = 1.04;
-        tRoll += 0.06;
-      } else if (live.mood === "barge_in") {
-        tPitch -= 0.12;
-      } else if (live.mood === "think") {
-        tYaw += 0.18;
-        tPitch -= 0.14;
-        tRoll += 0.07;
-      } else if (live.mood === "intent_desk") {
-        tYaw -= 0.22;
-        tPitch += 0.22;
-      } else if (live.mood === "reading") {
-        tYaw += (((t * 1.1) % 1) * 0.26 - 0.13);
-      } else if (live.mood === "greet") {
-        tPitch += Math.sin(gElapsed * 8.5) * 0.14 * Math.exp(-gElapsed * 1.6);
+      // When arm IS physically connected, layer pronounced 3D CAD reactions in sync with the physical gimbal!
+      if (live.mood === "yes") {
+        tPitch += Math.sin(gElapsed * 10.0) * 0.28 * Math.exp(-gElapsed * 0.35);
+        tScale = 1.07;
+      } else if (live.mood === "no") {
+        tYaw += Math.sin(gElapsed * 11.5) * 0.36 * Math.exp(-gElapsed * 0.35);
+        tRoll -= Math.sin(gElapsed * 11.5) * 0.09 * Math.exp(-gElapsed * 0.35);
       } else if (live.mood === "curious") {
-        tRoll += 0.18;
+        tYaw += 0.18;
+        tPitch -= 0.12;
+        tRoll += 0.32;
+        tScale = 1.05;
+      } else if (live.mood === "attentive") {
+        tScale = 1.07;
+        tRoll += 0.11;
+      } else if (live.mood === "barge_in") {
+        tPitch -= 0.20;
+        tScale = 1.06;
+      } else if (live.mood === "think") {
+        tYaw += 0.24;
+        tPitch -= 0.18;
+        tRoll += 0.11;
+      } else if (live.mood === "intent_desk") {
+        tYaw -= 0.28;
+        tPitch += 0.28;
+      } else if (live.mood === "reading") {
+        tYaw += (((t * 1.1) % 1) * 0.30 - 0.15);
+      } else if (live.mood === "greet") {
+        tPitch += Math.sin(gElapsed * 9.0) * 0.24 * Math.exp(-gElapsed * 1.4);
+        tScale = 1.06;
       } else if (live.mood === "speak") {
-        tPitch += Math.sin(t * 4.8) * 0.025;
+        tPitch += Math.sin(t * 4.8) * 0.04;
+        tRoll += Math.sin(t * 2.4) * 0.03;
       }
     }
 

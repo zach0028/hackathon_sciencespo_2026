@@ -113,33 +113,34 @@ GESTURES: dict[str, tuple[str, list[GestureStep]]] = {
     "nod_yes": (
         "Hochement OUI (haut / bas)",
         [
-            # Two bold, unmistakable vertical nods (down -> up -> down -> up -> level)
-            GestureStep(0.0, +64.0, 0.0, 0.27),
-            GestureStep(0.0, -72.0, 0.0, 0.30),
-            GestureStep(0.0, +68.0, 0.0, 0.28),
-            GestureStep(0.0, -68.0, 0.0, 0.28),
-            GestureStep(0.0, +24.0, 0.0, 0.16),
+            # Two bold, unmistakable auditorium-visible vertical nods (zero net drift!)
+            GestureStep(0.0, +110.0, 0.0, 0.34),
+            GestureStep(0.0, -122.0, 0.0, 0.38),
+            GestureStep(0.0, +118.0, 0.0, 0.35),
+            GestureStep(0.0, -115.0, 0.0, 0.35),
+            GestureStep(0.0, +40.0, 0.0, 0.20),
             GestureStep(0.0, 0.0, 0.0, 0.12),
         ],
     ),
     "shake_no": (
         "Secousse NON (gauche / droite)",
         [
-            # Three crisp, wide horizontal shakes (left -> right -> left -> right -> center)
-            GestureStep(-85.0, 0.0, 0.0, 0.23),
-            GestureStep(+96.0, 0.0, 0.0, 0.27),
-            GestureStep(-96.0, 0.0, 0.0, 0.27),
-            GestureStep(+96.0, 0.0, 0.0, 0.27),
-            GestureStep(-76.0, 0.0, 0.0, 0.22),
+            # Wide, snappy horizontal head shakes clearly readable across the room (zero net drift!)
+            GestureStep(-135.0, 0.0, 0.0, 0.26),
+            GestureStep(+155.0, 0.0, 0.0, 0.38),
+            GestureStep(-155.0, 0.0, 0.0, 0.38),
+            GestureStep(+155.0, 0.0, 0.0, 0.38),
+            GestureStep(-119.0, 0.0, 0.0, 0.20),
             GestureStep(0.0, 0.0, 0.0, 0.12),
         ],
     ),
     "curious_tilt": (
         "Inclinaison curieuse",
         [
-            GestureStep(+38.0, -26.0, 0.0, 0.38),
-            GestureStep(0.0, 0.0, 0.0, 0.50),
-            GestureStep(-38.0, +26.0, 0.0, 0.38),
+            # Bold Pixar-style diagonal head cock using Pan + Pitch + Roll, hold, then symmetric unwind!
+            GestureStep(+72.0, -52.0, +78.0, 0.44),
+            GestureStep(0.0, 0.0, 0.0, 0.58),
+            GestureStep(-72.0, +52.0, -78.0, 0.44),
             GestureStep(0.0, 0.0, 0.0, 0.12),
         ],
     ),
