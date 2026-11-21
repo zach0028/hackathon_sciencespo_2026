@@ -246,8 +246,10 @@ class GeminiLiveBrain:
     _gemini_ws: Any = None
     _active_tools: set[asyncio.Task[None]] = field(default_factory=set)
     _brain_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _ws_send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _last_user_text: str = ""
+    _last_activity_t: float = 0.0
 
     @property
     def api_key(self) -> str:
@@ -523,6 +525,7 @@ class GeminiLiveBrain:
 
                 self.live_connected = True
                 self.sideband_connected = True
+                self._last_activity_t = time.monotonic()
                 self._log("GEMINI", f"{self.live_model} connecté (session={self.session_id}, outils NON_BLOCKING actifs)")
                 await client_ws.send_text(
                     json.dumps(
@@ -570,6 +573,7 @@ class GeminiLiveBrain:
                                     txt = str(ev["text"]).strip()
                                     if txt:
                                         self._last_user_text = txt
+                                        self._last_activity_t = time.monotonic()
                                         await self._send_gemini_json({"realtimeInput": {"text": txt}})
                                 elif ev_type == "stop":
                                     break
@@ -583,11 +587,15 @@ class GeminiLiveBrain:
                         stop_evt.set()
 
                 async def vision_heartbeat() -> None:
-                    """Stream periodic low-bandwidth camera frames (640px) so Live sees Zach naturally."""
+                    """Stream smart low-bandwidth camera frames (640px) only when active & not pivoting."""
                     try:
-                        await asyncio.sleep(0.8)
+                        first_frame = True
+                        await asyncio.sleep(0.6)
                         while not stop_evt.is_set():
-                            if self.use_vision and self.on_get_frame and not self.busy:
+                            recently_active = first_frame or (time.monotonic() - self._last_activity_t) < 30.0
+                            ctx_now = self.on_get_context() if self.on_get_context else ""
+                            is_pivoting = "pivoting=True" in ctx_now
+                            if self.use_vision and self.on_get_frame and not self.busy and not is_pivoting and recently_active:
                                 raw_jpg = self.on_get_frame(False)
                                 if raw_jpg:
                                     small_jpg = await asyncio.to_thread(prepare_vision_jpeg, raw_jpg, high_res=False)
@@ -602,7 +610,8 @@ class GeminiLiveBrain:
                                                 }
                                             }
                                         )
-                            await asyncio.sleep(3.2)
+                                        first_frame = False
+                            await asyncio.sleep(5.0)
                     except asyncio.CancelledError:
                         raise
 
@@ -647,6 +656,7 @@ class GeminiLiveBrain:
                                     chunk = str(in_tr["text"])
                                     self._user_transcript_buf += chunk
                                     self._last_user_text = self._user_transcript_buf.strip()
+                                    self._last_activity_t = time.monotonic()
                                     if not self.speaking and not self.busy:
                                         self._set_micro("user_speaking", pulse=True)
 
@@ -736,85 +746,107 @@ class GeminiLiveBrain:
         fcalls: list[dict[str, Any]],
         turn_tools: list[str],
     ) -> None:
-        """Execute Gemini 3.8 Live NON_BLOCKING tool calls & feed 4K Neon OCR back cleanly."""
-        self.busy = True
-        t0 = time.monotonic()
-        responses: list[dict[str, Any]] = []
-        try:
-            for fc in fcalls:
-                call_id = str(fc.get("id") or "")
-                name = str(fc.get("name") or "")
-                args = dict(fc.get("args") or {})
-                turn_tools.append(f"{name}({', '.join(f'{k}={v}' for k, v in args.items())})")
+        """Execute Gemini 3.8 Live NON_BLOCKING tool calls serialized on hardware & feed 4K Neon OCR back."""
+        async with self._tool_lock:
+            self.busy = True
+            self._last_activity_t = time.monotonic()
+            t0 = time.monotonic()
+            responses: list[dict[str, Any]] = []
+            try:
+                for fc in fcalls:
+                    call_id = str(fc.get("id") or "")
+                    name = str(fc.get("name") or "")
+                    args = dict(fc.get("args") or {})
+                    turn_tools.append(f"{name}({', '.join(f'{k}={v}' for k, v in args.items())})")
 
-                # Immediate speculative pre-warm + organic micro-state!
-                if name == "show_on_screen" and args.get("face_user") and self.on_prewarm:
-                    self.on_prewarm("face")
-                elif name == "look_at_desk" and self.on_prewarm:
-                    self.on_prewarm("desk")
-                self._set_micro(
-                    "reading_sheet" if name == "look_at_desk" else "thinking",
-                    pulse=True,
-                    tool_intent=name,
-                )
+                    # Immediate speculative pre-warm + organic Pixel 3D CAD micro-state!
+                    if name == "show_on_screen" and args.get("face_user") and self.on_prewarm:
+                        self.on_prewarm("face")
+                    elif name == "look_at_desk" and self.on_prewarm:
+                        self.on_prewarm("desk")
+                    self._set_micro(
+                        "reading_sheet" if name == "look_at_desk" else "deep_thinking",
+                        pulse=True,
+                        tool_intent=name,
+                    )
 
-                result_obj = (
-                    await self.on_execute_tool(name, args)
-                    if self.on_execute_tool
-                    else {"ok": True}
-                )
-                if not isinstance(result_obj, dict):
-                    result_obj = {"result": str(result_obj)}
+                    result_obj = (
+                        await self.on_execute_tool(name, args)
+                        if self.on_execute_tool
+                        else {"ok": True}
+                    )
+                    if not isinstance(result_obj, dict):
+                        result_obj = {"result": str(result_obj)}
 
-                result_obj.pop("_spoken_override", None)
-                images = result_obj.pop("_images", None)
+                    spoken_hint = result_obj.pop("_spoken_override", None)
+                    if spoken_hint:
+                        result_obj["spoken_summary_hint"] = str(spoken_hint)
+                    images = result_obj.pop("_images", None)
 
-                # If desk/room photos were captured, run Gemini 4 Neon 4K reader for razor-sharp accuracy!
-                if images:
-                    # Also send the first preview image into Live's video stream for visual continuity
-                    first_jpg = images[0].get("jpeg") if isinstance(images[0], dict) else None
-                    if first_jpg:
-                        prev_b = await asyncio.to_thread(prepare_vision_jpeg, first_jpg, high_res=False)
-                        if prev_b:
-                            await self._send_gemini_json(
-                                {
-                                    "realtimeInput": {
-                                        "video": {
-                                            "mimeType": "image/jpeg",
-                                            "data": base64.b64encode(prev_b).decode("ascii"),
+                    if images:
+                        # Always push first preview frame directly into Live's video stream
+                        first_jpg = images[0].get("jpeg") if isinstance(images[0], dict) else None
+                        if first_jpg:
+                            prev_b = await asyncio.to_thread(prepare_vision_jpeg, first_jpg, high_res=False)
+                            if prev_b:
+                                await self._send_gemini_json(
+                                    {
+                                        "realtimeInput": {
+                                            "video": {
+                                                "mimeType": "image/jpeg",
+                                                "data": base64.b64encode(prev_b).decode("ascii"),
+                                            }
                                         }
                                     }
-                                }
+                                )
+                        # Run Gemini 4 Neon 4K deep reader ONLY for high-res desk/scan images (skip on look_at_user!)
+                        needs_neon_ocr = name == "look_at_desk" or (
+                            name == "move_arm"
+                            and (len(images) > 1 or any(img.get("detail") == "high" for img in images if isinstance(img, dict)))
+                        )
+                        if needs_neon_ocr:
+                            neon_reading = await self._analyze_images_with_neon(
+                                images,
+                                user_hint=self._last_user_text,
+                                tool_name=name,
                             )
-                    neon_reading = await self._analyze_images_with_neon(
-                        images,
-                        user_hint=self._last_user_text,
-                        tool_name=name,
+                            if neon_reading:
+                                result_obj["vision_reading"] = neon_reading
+
+                    # Keep Gemini Live permanently grounded on fresh sensor state (mode_bureau, came_from_desk, face_detected)
+                    if self.on_get_context:
+                        ctx_after = self.on_get_context()
+                        if ctx_after:
+                            result_obj["sensors"] = ctx_after
+
+                    # Fire-and-forget actuators use SILENT so they never trigger awkward extra turns;
+                    # reading/whiteboard/motion tools use WHEN_IDLE so Gemini finishes its cue cleanly first!
+                    is_silent_tool = (
+                        name in ("express", "set_tracking")
+                        or (name == "remember" and str(args.get("action", "")) in ("save", "forget"))
                     )
-                    if neon_reading:
-                        result_obj["vision_reading"] = neon_reading
+                    responses.append(
+                        {
+                            "id": call_id,
+                            "name": name,
+                            "scheduling": "SILENT" if is_silent_tool else "WHEN_IDLE",
+                            "response": result_obj,
+                        }
+                    )
 
-                responses.append(
-                    {
-                        "id": call_id,
-                        "name": name,
-                        "response": result_obj,
-                    }
-                )
-
-            if responses:
-                await self._send_gemini_json({"toolResponse": {"functionResponses": responses}})
-                dt_ms = round((time.monotonic() - t0) * 1000.0, 1)
-                self.last_brain_ms = dt_ms
-                self._log("GEMINI", f"Outils Live exécutés en {dt_ms:.0f}ms : {', '.join(turn_tools[-len(responses):])}")
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self._log("GEMINI", f"Erreur outil Live : {exc}")
-        finally:
-            self.busy = False
-            if not self.speaking:
-                self._set_micro("idle", tool_intent="")
+                if responses:
+                    await self._send_gemini_json({"toolResponse": {"functionResponses": responses}})
+                    dt_ms = round((time.monotonic() - t0) * 1000.0, 1)
+                    self.last_brain_ms = dt_ms
+                    self._log("GEMINI", f"Outils Live exécutés en {dt_ms:.0f}ms : {', '.join(turn_tools[-len(responses):])}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._log("GEMINI", f"Erreur outil Live : {exc}")
+            finally:
+                self.busy = False
+                if not self.speaking:
+                    self._set_micro("idle", tool_intent="")
 
     # ------------------------------------------------------------------
     # 3. Gemini 4 Neon Text & Multimodal Brain (Studio Text Prompts)
@@ -921,7 +953,7 @@ class GeminiLiveBrain:
                 gen_cfg["thinkingConfig"] = tc
 
             client = self._get_http()
-            self._set_micro("reading_sheet" if is_desk else "thinking", pulse=True)
+            self._set_micro("reading_sheet" if is_desk else "deep_thinking", pulse=True)
 
             t_r1 = time.monotonic()
             resp = await client.post(
@@ -957,7 +989,7 @@ class GeminiLiveBrain:
                         self.on_prewarm("face")
                     elif name == "look_at_desk" and self.on_prewarm:
                         self.on_prewarm("desk")
-                    self._set_micro("reading_sheet" if name == "look_at_desk" else "thinking", pulse=True, tool_intent=name)
+                    self._set_micro("reading_sheet" if name == "look_at_desk" else "deep_thinking", pulse=True, tool_intent=name)
 
                     result_obj = (
                         await self.on_execute_tool(name, args)

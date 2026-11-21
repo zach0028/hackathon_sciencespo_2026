@@ -365,7 +365,7 @@ class StudioRuntime:
             screen_txt += ", came_from_desk=True"
         return (
             f"camera={self.facing} ({self.width}x{self.height} zoom={self.camera_zoom:.2f}x), "
-            f"mode_bureau={self.arbiter.desk_mode}, ai_hold={self.arbiter.ai_hold_mode}, "
+            f"mode_bureau={self.arbiter.desk_mode}, pivoting={time.monotonic() < self._hw_busy_until}, ai_hold={self.arbiter.ai_hold_mode}, "
             f"face_detected={interp.face_detected} (conf={interp.confidence:.2f}, pos={interp.cx:+.2f},{interp.cy:+.2f}), "
             f"tracking_state={interp.state}, moteurs_live={self.arbiter.live_motors}, "
             f"hilight={self.hilight.current_effect}, {att_txt}{sheet_txt}{screen_txt}"

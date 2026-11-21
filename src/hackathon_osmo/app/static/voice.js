@@ -9,6 +9,7 @@ let geminiWs = null;
 let geminiProc = null;
 let geminiSink = null;
 let playCtx = null;
+let playDestNode = null;
 let nextPlayTime = 0;
 let activePlayNodes = new Set();
 
@@ -298,7 +299,7 @@ function _playGeminiPcm24k(arrayBuffer) {
   }
   const src = playCtx.createBufferSource();
   src.buffer = audioBuf;
-  src.connect(playCtx.destination);
+  src.connect(playDestNode || playCtx.destination);
   const now = playCtx.currentTime;
   const startAt = Math.max(now + 0.015, nextPlayTime);
   src.start(startAt);
@@ -344,6 +345,18 @@ async function startGeminiLiveCall() {
     micMuted = false;
 
     playCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+    await playCtx.resume().catch(() => {});
+    // Route playback through <audio id="live-audio"> via MediaStreamDestination when available
+    // so Chrome/macOS Acoustic Echo Cancellation (AEC) suppresses speaker bleed into the mic!
+    const audioEl = document.getElementById('live-audio');
+    if (audioEl && typeof playCtx.createMediaStreamDestination === 'function') {
+      const msd = playCtx.createMediaStreamDestination();
+      playDestNode = msd;
+      audioEl.srcObject = msd.stream;
+      audioEl.play().catch(() => {});
+    } else {
+      playDestNode = null;
+    }
     nextPlayTime = 0;
     activePlayNodes = new Set();
 
@@ -404,6 +417,9 @@ async function startGeminiLiveCall() {
     _wasTransmitting = false;
 
     const micSrc = startVuLoop(micStream);
+    if (audioCtx && audioCtx.state === 'suspended') {
+      await audioCtx.resume().catch(() => {});
+    }
     geminiProc = audioCtx.createScriptProcessor(2048, 1, 1);
     geminiSink = audioCtx.createGain();
     geminiSink.gain.value = 0;
@@ -543,6 +559,7 @@ async function stopLiveCall() {
     geminiWs = null;
   }
   _flushGeminiPlayback();
+  playDestNode = null;
   if (playCtx) {
     try { await playCtx.close(); } catch (_) {}
     playCtx = null;
