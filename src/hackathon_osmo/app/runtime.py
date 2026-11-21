@@ -123,6 +123,7 @@ class StudioRuntime:
         self.osmo_last_tx: str = ""
         self._hw_busy_until: float = 0.0
         self._last_expr_t: float = 0.0
+        self._came_from_desk_for_board: bool = False
         self._prewarm_desk_task: asyncio.Task[tuple[float | None, float | None]] | None = None
         self._prewarm_face_task: asyncio.Task[None] | None = None
 
@@ -350,6 +351,8 @@ class StudioRuntime:
                 for it in (self.screen_card.get("items") or [])[:5]
             )
             screen_txt = f", screen_board={self.screen_card.get('mode')}:{self.screen_card.get('title')} [{sc_items}]"
+        if self._came_from_desk_for_board and not self.arbiter.desk_mode:
+            screen_txt += ", came_from_desk=True"
         return (
             f"camera={self.facing} ({self.width}x{self.height} zoom={self.camera_zoom:.2f}x), "
             f"mode_bureau={self.arbiter.desk_mode}, ai_hold={self.arbiter.ai_hold_mode}, "
@@ -906,6 +909,7 @@ class StudioRuntime:
 
         self.arbiter.desk_mode = True
         self.arbiter.ai_hold_mode = True
+        self._came_from_desk_for_board = False
 
         att = self._osmo.last_attitude if (self._osmo and self.osmo_connected) else None
         prewarm_arm = self._prewarm_desk_task
@@ -1349,7 +1353,8 @@ class StudioRuntime:
             spoken = str(args.get("spoken_summary") or "").strip()
 
             if mode == "clear":
-                self.screen_card = {"mode": "none", "title": "", "items": [], "note": "", "updated_at": time.time()}
+                self._came_from_desk_for_board = False
+                self.screen_card = {"mode": "none", "title": "", "items": [], "note": "", "came_from_desk": False, "updated_at": time.time()}
                 self.arbiter.log("SCREEN", "Écran Pixel OLED remis en mode normal")
                 turned_clear = False
                 if face_user and (self.arbiter.desk_mode or self._prewarm_face_task is not None):
@@ -1364,20 +1369,25 @@ class StudioRuntime:
                     out["_spoken_override"] = spoken
                 return out
 
-            title = str(args.get("title") or "OSMO // NOTES").strip()[:60]
+            title = str(args.get("title") or "OSMO // NOTES").strip()[:64]
             raw_items = args.get("items") or []
             items = [
-                {"text": str(it).strip()[:140], "done": False}
+                {"text": str(it).strip()[:160], "done": False}
                 for it in raw_items[:5]
                 if str(it).strip()
             ]
             note = str(args.get("note") or "").strip()[:180]
-            clean_mode = mode if mode in ("exercise", "feedback", "checklist", "concept") else "exercise"
+            valid_modes = ("definition", "concept", "exercise", "exam", "checklist", "feedback")
+            clean_mode = mode if mode in valid_modes else "concept"
+            was_on_desk = bool(self.arbiter.desk_mode or self._prewarm_face_task is not None)
+            if face_user and was_on_desk:
+                self._came_from_desk_for_board = True
             self.screen_card = {
                 "mode": clean_mode,
                 "title": title,
                 "items": items,
                 "note": note,
+                "came_from_desk": self._came_from_desk_for_board,
                 "updated_at": time.time(),
             }
             self.arbiter.log("SCREEN", f"Carte Pixel OLED [{clean_mode}] : {title} ({len(items)} items)")
@@ -1385,7 +1395,7 @@ class StudioRuntime:
             # Natural "Show & Tell" choreography: join in-flight SSE pre-warm (or swing back now!)
             # without blocking 750ms on face polling — Apple Vision locks automatically in the background!
             turned_to_user = False
-            if face_user and (self.arbiter.desk_mode or self._prewarm_face_task is not None):
+            if face_user and was_on_desk:
                 turned_to_user = True
                 await self.return_to_face_mode(
                     search_if_missing=False,

@@ -14,6 +14,8 @@
   --rim-b: 250;
   --halo-alpha: 0.08;
   --accent-ex: #60a5fa;
+  --accent-def: #2dd4bf;
+  --accent-exam: #fb7185;
   --accent-fb: #a78bfa;
   --accent-chk: #34d399;
   --accent-con: #fbbf24;
@@ -276,6 +278,14 @@ body[data-mode="focus"] .hud-top {
   border-top-color: var(--accent-ex);
 }
 
+.board-card[data-card-mode="definition"] {
+  border-top-color: var(--accent-def);
+}
+
+.board-card[data-card-mode="exam"] {
+  border-top-color: var(--accent-exam);
+}
+
 .board-card[data-card-mode="feedback"] {
   border-top-color: var(--accent-fb);
 }
@@ -344,6 +354,14 @@ body[data-mode="focus"] .hud-top {
   color: #07080b;
   background: var(--accent-ex);
   flex-shrink: 0;
+}
+
+.board-card[data-card-mode="definition"] .board-mode-badge {
+  background: var(--accent-def);
+}
+
+.board-card[data-card-mode="exam"] .board-mode-badge {
+  background: var(--accent-exam);
 }
 
 .board-card[data-card-mode="feedback"] .board-mode-badge {
@@ -490,6 +508,55 @@ body[data-mode="focus"] .hud-top {
 
 .board-card[data-card-mode="concept"] .board-item {
   border-left-color: rgba(251, 191, 36, 0.72);
+}
+
+.board-card[data-card-mode="definition"] .board-item {
+  border-left-color: var(--accent-def);
+}
+
+.board-card[data-card-mode="definition"] .board-item.def-hero {
+  background: rgba(45, 212, 191, 0.08);
+  border-color: rgba(45, 212, 191, 0.28);
+  border-left: 3px solid var(--accent-def);
+  font-size: clamp(16px, 2.25vw, 22px);
+  font-weight: 500;
+  padding: 12px 14px;
+}
+
+.board-card[data-card-mode="definition"] .board-item.def-trap {
+  border-left-color: #fbbf24;
+  background: rgba(251, 191, 36, 0.06);
+}
+
+.board-card[data-card-mode="definition"] .item-tag {
+  color: var(--accent-def);
+  min-width: 62px;
+}
+
+.board-card[data-card-mode="definition"] .board-item.def-trap .item-tag {
+  color: #fbbf24;
+}
+
+.board-card[data-card-mode="exam"] .board-item {
+  border-left-color: var(--accent-exam);
+}
+
+.board-card[data-card-mode="exam"] .item-tag {
+  color: var(--accent-exam);
+}
+
+.item-pts {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--accent-exam);
+  background: rgba(251, 113, 133, 0.12);
+  border: 1px solid rgba(251, 113, 133, 0.34);
+  border-radius: 2px;
+  padding: 2px 6px;
+  flex-shrink: 0;
+  align-self: center;
 }
 
 .board-card[data-card-mode="feedback"] .board-item.fb-ok {

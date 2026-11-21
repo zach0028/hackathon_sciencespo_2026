@@ -401,7 +401,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                         runtime.hilight.start_reaction("yes")
 
             elif action == "clear_screen_card":
-                runtime.screen_card = {"mode": "none", "title": "", "items": [], "note": "", "updated_at": 0.0}
+                runtime._came_from_desk_for_board = False
+                runtime.screen_card = {"mode": "none", "title": "", "items": [], "note": "", "came_from_desk": False, "updated_at": 0.0}
 
             elif action == "pid":
                 cfg = runtime.arbiter.config

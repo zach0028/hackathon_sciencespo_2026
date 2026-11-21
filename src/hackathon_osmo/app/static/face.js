@@ -352,9 +352,15 @@
       } else if (cmode === "feedback") {
         live.mood = "yes";
         live.stateLabel = "FEEDBACK";
+      } else if (cmode === "definition") {
+        live.mood = "attentive";
+        live.stateLabel = "DEFINITION";
+      } else if (cmode === "exam") {
+        live.mood = "focusing";
+        live.stateLabel = "MINI-EXAM";
       } else if (cmode === "concept") {
         live.mood = "curious";
-        live.stateLabel = "CONCEPT";
+        live.stateLabel = "EXPLANATION";
       } else {
         live.mood = "listen";
         live.stateLabel = "EXERCISE";
@@ -454,22 +460,27 @@
       n: card.note || "",
       h: hintRevealed,
       d: live.deskMode,
+      c: Boolean(card.came_from_desk),
       i: items.map((x) => [x.text, Boolean(x.done)])
     });
     if (sig === lastBoardSig) return;
     lastBoardSig = sig;
 
     elBoardCard.dataset.cardMode = mode;
-    elBoardModeBadge.textContent = mode.toUpperCase();
+    elBoardModeBadge.textContent = mode === "exam" ? "MINI-EXAM" : mode.toUpperCase();
     elBoardTitle.textContent =
       card.title ||
-      (mode === "exercise"
-        ? "PRACTICE EXERCISE"
-        : mode === "feedback"
-          ? "WORK CHECK · FEEDBACK"
-          : mode === "checklist"
-            ? "STUDY CHECKLIST"
-            : "KEY CONCEPT");
+      (mode === "definition"
+        ? "KEY DEFINITION"
+        : mode === "exam"
+          ? "MINI-EXAM"
+          : mode === "exercise"
+            ? "PRACTICE EXERCISE"
+            : mode === "feedback"
+              ? "WORK CHECK · FEEDBACK"
+              : mode === "checklist"
+                ? "STUDY CHECKLIST"
+                : "KEY EXPLANATION");
 
     // Checklist completion progress bar
     if (mode === "checklist" && items.length > 0) {
@@ -483,14 +494,14 @@
       elBoardProgressTrack.classList.add("hidden");
     }
 
-    // Separate "Given / Data" strip in Exercise mode for effortless scanning
+    // Separate "Given / Data" strip in Exercise & Exam modes for effortless scanning
     const givenParts = [];
     const displayRows = [];
     items.forEach((it, origIdx) => {
       const txt = String(it.text || "").trim();
       if (!txt) return;
-      if (mode === "exercise") {
-        const mGiven = txt.match(/^(?:given|data|context|values)\s*[:—-]\s*(.+)$/i);
+      if (mode === "exercise" || mode === "exam") {
+        const mGiven = txt.match(/^(?:given|data|context|values|time)\s*[:—-]\s*(.+)$/i);
         if (mGiven) {
           givenParts.push(mGiven[1].trim());
           return;
@@ -499,20 +510,36 @@
       displayRows.push({ text: txt, done: Boolean(it.done), origIdx });
     });
 
-    if (mode === "exercise" && givenParts.length > 0) {
+    if ((mode === "exercise" || mode === "exam") && givenParts.length > 0) {
       elBoardGivenText.textContent = givenParts.join("  ·  ");
       elBoardGiven.classList.remove("hidden");
     } else {
       elBoardGiven.classList.add("hidden");
     }
 
-    // Render Exercise questions / Feedback ✓△→ rows / Checklist items / Concept bullets
+    // Render Definition / Exercise / Exam [pts] / Feedback ✓△→ / Checklist / Concept rows
     elBoardList.innerHTML = displayRows.map((row, rowIdx) => {
       let tag = `0${rowIdx + 1}`;
       let bodyText = row.text;
       let extraCls = "";
+      let ptsBadge = "";
+
       if (mode === "checklist") {
         tag = row.done ? "[✓]" : "[ ]";
+      } else if (mode === "definition") {
+        const mDef = bodyText.match(/^(definition|def|formula|equation|example|ex|trap|watch out|key)\s*[:—-]\s*(.+)$/i);
+        if (mDef) {
+          const lbl = mDef[1].toUpperCase();
+          tag = lbl === "DEF" ? "DEF" : lbl.startsWith("WATCH") ? "TRAP" : lbl;
+          bodyText = mDef[2].trim();
+          if (tag === "DEF" || tag === "DEFINITION") { tag = "DEF"; extraCls = "def-hero"; }
+          else if (tag === "TRAP") extraCls = "def-trap";
+        } else if (rowIdx === 0) {
+          tag = "DEF";
+          extraCls = "def-hero";
+        } else {
+          tag = "NOTE";
+        }
       } else if (mode === "feedback") {
         if (/^(?:ok|good|correct|✓)\s*[:—-]?\s*/i.test(bodyText)) {
           tag = "✓";
@@ -529,24 +556,34 @@
         } else {
           tag = "·";
         }
-      } else if (mode === "exercise") {
-        const mQ = bodyText.match(/^(Q\d+|Part\s*[A-Z]|\d+)[\)\.\:\-]\s*(.+)$/i);
+      } else if (mode === "exercise" || mode === "exam") {
+        const mQ = bodyText.match(/^(Q\d+|Part\s*[A-Z]|\d+)(?:\s*[\[\(](\d+(?:\.\d+)?\s*pts?)[\]\)])?[\)\.\:\-]\s*(.+)$/i);
         if (mQ) {
           tag = mQ[1].toUpperCase().replace(/^(\d+)$/, "Q$1");
-          bodyText = mQ[2].trim();
+          if (mQ[2]) ptsBadge = `<span class="item-pts">${escHtml(mQ[2].toUpperCase())}</span>`;
+          bodyText = mQ[3].trim();
         } else {
           tag = `Q${rowIdx + 1}`;
         }
+        // Also catch trailing [2 pts] / (3 pts) at end of question line
+        if (!ptsBadge && mode === "exam") {
+          const mTrail = bodyText.match(/[\[\(](\d+(?:\.\d+)?\s*pts?)[\]\)]\s*$/i);
+          if (mTrail) {
+            ptsBadge = `<span class="item-pts">${escHtml(mTrail[1].toUpperCase())}</span>`;
+            bodyText = bodyText.slice(0, mTrail.index).trim();
+          }
+        }
       }
-      return `<li class="board-item ${extraCls} ${row.done ? "done" : ""}" data-idx="${row.origIdx}"><span class="item-tag">${escHtml(tag)}</span><span class="item-text">${escHtml(bodyText)}</span></li>`;
+      return `<li class="board-item ${extraCls} ${row.done ? "done" : ""}" data-idx="${row.origIdx}"><span class="item-tag">${escHtml(tag)}</span><span class="item-text">${escHtml(bodyText)}</span>${ptsBadge}</li>`;
     }).join("");
 
-    // Exercise collapsible Hint vs Concept/Checklist bottom Note
+    // Exercise/Exam collapsible Hint/Rubric vs Definition/Concept/Checklist/Feedback bottom Note
     const noteTxt = String(card.note || "").trim();
-    if (mode === "exercise" && noteTxt) {
+    if ((mode === "exercise" || mode === "exam") && noteTxt) {
       elBoardHintWrap.classList.remove("hidden");
       elBoardNote.classList.add("hidden");
-      btnToggleHint.textContent = hintRevealed ? "HINT ▾ HIDE" : "HINT ▸ TAP TO REVEAL";
+      const hLbl = mode === "exam" ? "RUBRIC / HINT" : "HINT";
+      btnToggleHint.textContent = hintRevealed ? `${hLbl} ▾ HIDE` : `${hLbl} ▸ TAP TO REVEAL`;
       elBoardHintBox.textContent = noteTxt;
       elBoardHintBox.classList.toggle("hidden", !hintRevealed);
     } else if (noteTxt) {
@@ -558,16 +595,24 @@
       elBoardNote.classList.add("hidden");
     }
 
-    elBoardFootGuide.textContent =
-      mode === "exercise"
+    const fromDesk = Boolean(card.came_from_desk);
+    elBoardFootGuide.textContent = fromDesk
+      ? "NOTED? SAY 'GOT IT' TO RETURN TO YOUR SHEET"
+      : mode === "exercise" || mode === "exam"
         ? (noteTxt ? "SOLVE ON PAPER · TAP HINT IF STUCK" : "SOLVE ON PAPER · SAY CHECK MY SHEET")
-        : mode === "feedback"
-          ? "REVIEW FEEDBACK · READY FOR NEXT STEP"
-          : mode === "checklist"
-            ? "TAP ITEMS TO CHECK OFF"
-            : "OSMO // OLED CONCEPT BOARD";
+        : mode === "definition"
+          ? "COPY THIS DEFINITION · SAY 'GOT IT' WHEN READY"
+          : mode === "feedback"
+            ? "REVIEW FEEDBACK · READY FOR NEXT STEP"
+            : mode === "checklist"
+              ? "TAP ITEMS TO CHECK OFF"
+              : "OSMO // OLED TUTOR BOARD";
 
-    btnBoardPivot.textContent = live.deskMode ? "FACE ME ↗" : "LOOK AT SHEET ↘";
+    btnBoardPivot.textContent = live.deskMode
+      ? "FACE ME ↗"
+      : fromDesk
+        ? "BACK TO SHEET ↘"
+        : "LOOK AT SHEET ↘";
   }
 
   function syncDomLayers() {
@@ -816,6 +861,39 @@
       live.stateLabel = "QUIET";
       live.reply = "";
       live.screenCard = { mode: "none", title: "", items: [], note: "" };
+    } else if (preset === "definition") {
+      live.mode = "board";
+      live.mood = "attentive";
+      live.stateLabel = "DEFINITION";
+      live.screenCard = {
+        mode: "definition",
+        title: "QMAX · PEAK CONTACT HEAT FLUX",
+        items: [
+          { text: "Maximum rate of conductive heat transferred from warm skin into a cooler fabric at first contact.", done: false },
+          { text: "Formula: Pmax = Qmax × A   (W/cm² × cm² = W)", done: false },
+          { text: "Trap: High Qmax measures instant cool touch, NOT how long cooling lasts.", done: false }
+        ],
+        note: "Higher Qmax → faster initial heat draw from skin → cooler sensation",
+        came_from_desk: true,
+        updated_at: Date.now()
+      };
+    } else if (preset === "exam") {
+      live.mode = "board";
+      live.mood = "focusing";
+      live.stateLabel = "MINI-EXAM";
+      hintRevealed = false;
+      live.screenCard = {
+        mode: "exam",
+        title: "MINI-EXAM · THERMAL TRANSFER (5 PTS)",
+        items: [
+          { text: "Given: ICENYL Qmax = 0.18 W/cm² · Cotton = 0.10 W/cm² · Area A = 12 cm²", done: false },
+          { text: "Q1 [2 pts]: Explain why ICENYL feels cooler than cotton at first touch.", done: false },
+          { text: "Q2 [3 pts]: Compute peak heat power difference ΔPmax between both fabrics.", done: false }
+        ],
+        note: "Rubric: 2 pts conduction direction + rate; 3 pts ΔP = (0.18 − 0.10) × 12 = 0.96 W",
+        came_from_desk: true,
+        updated_at: Date.now()
+      };
     } else if (preset === "exercise") {
       live.mode = "board";
       live.mood = "listen";

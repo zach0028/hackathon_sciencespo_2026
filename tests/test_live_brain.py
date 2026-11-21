@@ -37,7 +37,15 @@ def test_robot_tools_compact_five_tool_hierarchy() -> None:
     props = screen_tool["parameters"]["properties"]
     # `face_user` must be the FIRST schema property so SSE streams it within ~50ms for parallel arm return!
     assert list(props.keys())[0] == "face_user"
-    assert props["mode"]["enum"] == ["exercise", "feedback", "checklist", "concept", "clear"]
+    assert props["mode"]["enum"] == [
+        "definition",
+        "concept",
+        "exercise",
+        "exam",
+        "checklist",
+        "feedback",
+        "clear",
+    ]
     assert "spoken_summary" in props
     assert set(screen_tool["parameters"]["required"]) == {
         "face_user",
