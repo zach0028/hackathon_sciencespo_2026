@@ -8,7 +8,38 @@ let analyser = null;
 let vuLoopId = null;
 let liveActive = false;
 let micMuted = false;
+let pttLockIn = false;   // Optional noisy-room mode: hold SPACE to transmit mic (default: false = Full-Duplex)
+let pttSpaceHeld = false;
 let textBusy = false;
+
+function applyMicTrackState() {
+  if (!micStream) return;
+  const shouldTransmit = pttLockIn ? pttSpaceHeld : !micMuted;
+  for (const track of micStream.getAudioTracks()) {
+    track.enabled = shouldTransmit;
+  }
+  const btnMute = document.getElementById('btn-mute');
+  if (btnMute && liveActive) {
+    if (pttLockIn) {
+      btnMute.textContent = pttSpaceHeld ? 'TX · SPACE' : 'HOLD SPACE';
+      btnMute.className = pttSpaceHeld ? 'live-on' : 'danger';
+    } else {
+      btnMute.textContent = micMuted ? 'MIC MUTED' : 'MIC ON';
+      btnMute.className = micMuted ? 'danger' : 'active';
+    }
+  }
+}
+
+function togglePttMode() {
+  pttLockIn = !pttLockIn;
+  pttSpaceHeld = false;
+  const btn = document.getElementById('btn-ptt-mode');
+  if (btn) {
+    btn.textContent = pttLockIn ? 'PTT · SPACE' : 'PTT : OFF';
+    btn.className = pttLockIn ? 'active' : '';
+  }
+  applyMicTrackState();
+}
 
 function renderVoiceState(voice) {
   const selModel = document.getElementById('sel-model');
@@ -30,7 +61,11 @@ function renderVoiceState(voice) {
     } else if (voice.speaking) {
       lbl.textContent = 'SPEAKING · FULL-DUPLEX';
     } else if (liveActive && voice.sideband_connected) {
-      lbl.textContent = micMuted ? 'LIVE · MUTED' : 'LIVE · ACTIVE';
+      if (pttLockIn) {
+        lbl.textContent = pttSpaceHeld ? 'PTT · TRANSMITTING' : 'LOCK-IN · HOLD SPACE';
+      } else {
+        lbl.textContent = micMuted ? 'LIVE · MUTED' : 'LIVE · ACTIVE';
+      }
     } else if (liveActive) {
       lbl.textContent = 'WEBRTC · LINKING';
     } else {
@@ -81,7 +116,8 @@ function startVuLoop(stream) {
       document.getElementById('vu-fill').style.width = '0%';
       return;
     }
-    if (micMuted) {
+    const transmitting = pttLockIn ? pttSpaceHeld : !micMuted;
+    if (!transmitting) {
       document.getElementById('vu-fill').style.width = '0%';
     } else {
       analyser.getByteTimeDomainData(buf);
@@ -188,13 +224,13 @@ async function startLiveCall() {
     await peerConn.setRemoteDescription({ type: 'answer', sdp: data.sdp });
 
     liveActive = true;
+    pttSpaceHeld = false;
     startVuLoop(micStream);
     btn.classList.add('recording');
     btn.textContent = 'STOP LIVE SESSION';
     btnMute.disabled = false;
-    btnMute.textContent = 'MIC ON';
-    btnMute.className = 'active';
-    lbl.textContent = 'LIVE · CONNECTED';
+    applyMicTrackState();
+    lbl.textContent = pttLockIn ? 'LOCK-IN · HOLD SPACE' : 'LIVE · CONNECTED';
   } catch (err) {
     lbl.textContent = 'ERR · ' + (err.message || err);
     await stopLiveCall();
@@ -246,13 +282,13 @@ async function stopLiveCall() {
 
 function toggleMicMute() {
   if (!micStream || !liveActive) return;
-  micMuted = !micMuted;
-  for (const track of micStream.getAudioTracks()) {
-    track.enabled = !micMuted;
+  if (pttLockIn) {
+    // Clicking the indicator in PTT mode exits PTT back to open mic
+    togglePttMode();
+    return;
   }
-  const btnMute = document.getElementById('btn-mute');
-  btnMute.textContent = micMuted ? 'MIC MUTED' : 'MIC ON';
-  btnMute.className = micMuted ? 'danger' : 'active';
+  micMuted = !micMuted;
+  applyMicTrackState();
 }
 
 async function sendTextTurn() {
@@ -282,10 +318,40 @@ async function sendTextTurn() {
   }
 }
 
+function _isTypingTarget(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || el.isContentEditable;
+}
+
 window.addEventListener('keydown', (e) => {
-  if (e.key.toLowerCase() === 'm' && liveActive && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'SELECT') {
+  if (_isTypingTarget(document.activeElement)) return;
+  if (e.code === 'Space' && pttLockIn && liveActive) {
+    e.preventDefault();
+    if (!pttSpaceHeld) {
+      pttSpaceHeld = true;
+      applyMicTrackState();
+    }
+    return;
+  }
+  if (e.key.toLowerCase() === 'm' && liveActive && !pttLockIn) {
     e.preventDefault();
     toggleMicMute();
+  }
+});
+
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'Space' && pttLockIn && pttSpaceHeld) {
+    e.preventDefault();
+    pttSpaceHeld = false;
+    applyMicTrackState();
+  }
+});
+
+window.addEventListener('blur', () => {
+  if (pttLockIn && pttSpaceHeld) {
+    pttSpaceHeld = false;
+    applyMicTrackState();
   }
 });
 window.addEventListener('beforeunload', () => {

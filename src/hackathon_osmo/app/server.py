@@ -65,6 +65,22 @@ async def api_launch_pixel_face(port: int = 8765) -> JSONResponse:
 
     def _launch_sync() -> None:
         subprocess.run([adb, "-s", serial, "reverse", f"tcp:{int(port)}", f"tcp:{int(port)}"], check=True, capture_output=True)
+        # Demo-ready display prep: keep screen awake 30 min (even on battery) + lock Landscape orientation
+        subprocess.run(
+            [adb, "-s", serial, "shell", "settings", "put", "system", "screen_off_timeout", "1800000"],
+            check=False,
+            capture_output=True,
+        )
+        subprocess.run(
+            [adb, "-s", serial, "shell", "settings", "put", "system", "accelerometer_rotation", "0"],
+            check=False,
+            capture_output=True,
+        )
+        subprocess.run(
+            [adb, "-s", serial, "shell", "settings", "put", "system", "user_rotation", "1"],
+            check=False,
+            capture_output=True,
+        )
         subprocess.run(
             [adb, "-s", serial, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url],
             check=True,
