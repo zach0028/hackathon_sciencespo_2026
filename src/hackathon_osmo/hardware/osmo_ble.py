@@ -32,6 +32,16 @@ class GimbalAttitude:
     pitch_deg: float
     roll_deg: float
     yaw_deg: float
+    quat: tuple[float, float, float, float] | None = None  # normalized (qw, qx, qy, qz)
+
+
+def quat_angle_deg(
+    q1: tuple[float, float, float, float],
+    q2: tuple[float, float, float, float],
+) -> float:
+    """True 3D geodesic rotation angle in degrees [0..180] between two unit quaternions (no Euler coupling)."""
+    dot = abs(q1[0] * q2[0] + q1[1] * q2[1] + q1[2] * q2[2] + q1[3] * q2[3])
+    return math.degrees(2.0 * math.acos(max(0.0, min(1.0, dot))))
 
 
 async def discover_osmo(
@@ -138,7 +148,10 @@ class OsmoBleClient:
                     cosy = 1.0 - 2.0 * (qy * qy + qz * qz)
                     yaw = math.degrees(math.atan2(siny, cosy))
                     self.last_attitude = GimbalAttitude(
-                        pitch_deg=pitch, roll_deg=roll, yaw_deg=yaw
+                        pitch_deg=pitch,
+                        roll_deg=roll,
+                        yaw_deg=yaw,
+                        quat=(qw / norm, qx / norm, qy / norm, qz / norm),
                     )
             elif pkt.cmd_set == 0x04 and pkt.cmd_id == 0x05 and len(pkt.payload) >= 6:
                 pitch, roll, yaw = struct.unpack_from("<hhh", pkt.payload, 0)

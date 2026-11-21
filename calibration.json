@@ -24,8 +24,9 @@
     "pan_roll_deg": 179.3
   },
   "desk_pose": {
-    "pitch_deg": 46.0,
-    "pan_roll_deg": -66.3,
+    "pitch_deg": 53.6,
+    "pan_roll_deg": -64.4,
+    "pivot_deg": 180.0,
     "width": 2688,
     "height": 1512,
     "bitrate": 16000000,

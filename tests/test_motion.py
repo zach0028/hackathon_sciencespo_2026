@@ -12,6 +12,7 @@ from hackathon_osmo.control.motion import (
     screen_to_motor,
     wrap_angle_deg,
 )
+from hackathon_osmo.hardware.osmo_ble import quat_angle_deg
 from hackathon_osmo.vision.face import FaceBox
 
 
@@ -184,6 +185,18 @@ def test_reset_face_loss_timers_prevents_spurious_search_after_desk_mode() -> No
     arb.desk_mode = False
     interp = arb.update_vision([], vision_ms=10.0, now=50.1)
     assert interp.state == "IDLE_HOME"
+
+
+def test_quat_angle_deg_measures_true_geodesic_rotation() -> None:
+    q_id = (1.0, 0.0, 0.0, 0.0)
+    q_neg = (-1.0, 0.0, 0.0, 0.0)  # same physical orientation (double cover)
+    q_90z = (0.70710678, 0.0, 0.0, 0.70710678)
+    q_180z = (0.0, 0.0, 0.0, 1.0)
+    assert quat_angle_deg(q_id, q_id) == pytest.approx(0.0, abs=1e-4)
+    assert quat_angle_deg(q_id, q_neg) == pytest.approx(0.0, abs=1e-4)
+    assert quat_angle_deg(q_id, q_90z) == pytest.approx(90.0, abs=1e-3)
+    assert quat_angle_deg(q_id, q_180z) == pytest.approx(180.0, abs=1e-3)
+
 
 
 

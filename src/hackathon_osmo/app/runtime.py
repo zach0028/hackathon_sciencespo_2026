@@ -24,7 +24,7 @@ from hackathon_osmo.control.motion import (
     wrap_angle_deg,
 )
 from hackathon_osmo.hardware.duml import CRC_CLASSIC, make_gimbal_joystick_packet
-from hackathon_osmo.hardware.osmo_ble import OsmoBleClient, discover_osmo
+from hackathon_osmo.hardware.osmo_ble import OsmoBleClient, discover_osmo, quat_angle_deg
 from hackathon_osmo.hardware.pixel_camera import PixelCameraStream, list_adb_devices
 from hackathon_osmo.hardware.pixel_hilight import PixelHiLight
 from hackathon_osmo.paths import CALIBRATION_FILE
@@ -49,13 +49,16 @@ class StudioRuntime:
             "pan_roll_deg": 179.3,
         }
         self.desk_pose: dict[str, Any] = {
-            "pitch_deg": 46.0,
-            "pan_roll_deg": -66.3,
+            "pitch_deg": 53.6,
+            "pan_roll_deg": -64.4,
+            "pivot_deg": 180.0,
             "width": 2688,
             "height": 1512,
             "bitrate": 16_000_000,
             "default_zoom": 1.0,
         }
+        self._face_quat: tuple[float, float, float, float] | None = None
+        self._last_pivot_dir: float = 1.0
         self._camera_gen: int = 0
         self._frame_ready_event = asyncio.Event()
 
@@ -284,6 +287,100 @@ class StudioRuntime:
         await self._send_body_speed(0.0, 0.0)
         return self._osmo.last_attitude.pitch_deg
 
+    async def _pivot_pan_relative_quat(self, target_deg: float = 180.0, timeout_s: float = 5.5) -> float:
+        """Rotate horizontal Pan by target_deg (~180°) relative to current head orientation using 3D quaternion geodesic.
+
+        100% immune to Euler axis coupling or tripod orientation: wherever the user's head is right now,
+        the rear camera lands directly aligned with the sheet in front of the user's head!
+        """
+        if not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
+            return 0.0
+        q_start = self._osmo.last_attitude.quat
+        if q_start is None:
+            # Fallback if only Euler packet available
+            await self.arbiter.move_relative_deg(target_deg, 0.0, speed_dps=75.0, hold_after=True)
+            return target_deg
+
+        stop_deg = max(30.0, min(176.0, float(target_deg) - 4.0))
+        direction = self._last_pivot_dir or 1.0
+        flipped = False
+        stall_since: float | None = None
+        last_turned = 0.0
+        turned = 0.0
+        deadline = time.monotonic() + timeout_s
+
+        while time.monotonic() < deadline and self.osmo_connected:
+            att = self._osmo.last_attitude
+            if att is None or att.quat is None:
+                await asyncio.sleep(0.05)
+                continue
+            turned = quat_angle_deg(q_start, att.quat)
+            if turned >= stop_deg:
+                break
+
+            remaining = max(0.0, target_deg - turned)
+            spd = max(24.0, min(88.0, remaining * 2.4))
+            await self._send_body_speed(direction * spd, 0.0)
+            await asyncio.sleep(0.05)
+
+            if abs(turned - last_turned) < 0.7 and spd >= 40.0:
+                if stall_since is None:
+                    stall_since = time.monotonic()
+                elif time.monotonic() - stall_since > 0.36 and not flipped:
+                    direction = -direction
+                    flipped = True
+                    stall_since = None
+                    self.arbiter.log("ARM", f"Butée Pan atteinte à {turned:.0f}° → demi-tour par le côté libre")
+            else:
+                stall_since = None
+            last_turned = turned
+
+        await self._send_body_speed(0.0, 0.0)
+        self._last_pivot_dir = direction
+        return round(turned, 1)
+
+    async def _pivot_pan_back_to_quat(
+        self,
+        target_quat: tuple[float, float, float, float],
+        timeout_s: float = 5.0,
+    ) -> float:
+        """Unwind horizontal Pan in reverse direction back to saved head quaternion."""
+        if not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
+            return 0.0
+        direction = -(self._last_pivot_dir or 1.0)
+        flipped = False
+        stall_since: float | None = None
+        last_dist = 180.0
+        dist = 180.0
+        deadline = time.monotonic() + timeout_s
+
+        while time.monotonic() < deadline and self.osmo_connected:
+            att = self._osmo.last_attitude
+            if att is None or att.quat is None:
+                await asyncio.sleep(0.05)
+                continue
+            dist = quat_angle_deg(target_quat, att.quat)
+            if dist <= 8.0:
+                break
+
+            spd = max(22.0, min(88.0, dist * 2.4))
+            await self._send_body_speed(direction * spd, 0.0)
+            await asyncio.sleep(0.05)
+
+            if abs(dist - last_dist) < 0.7 and spd >= 40.0:
+                if stall_since is None:
+                    stall_since = time.monotonic()
+                elif time.monotonic() - stall_since > 0.36 and not flipped:
+                    direction = -direction
+                    flipped = True
+                    stall_since = None
+            else:
+                stall_since = None
+            last_dist = dist
+
+        await self._send_body_speed(0.0, 0.0)
+        return round(dist, 1)
+
     async def _servo_pan_to_imu(self, target_roll_deg: float, timeout_s: float = 4.2) -> float | None:
         """Closed-loop IMU horizontal pan servo on OM3's true pan axis (att.roll_deg).
 
@@ -428,8 +525,8 @@ class StudioRuntime:
         3. Apple Vision sheet/text detection -> mechanical centering -> smart optical zoom (0.51x..5x)
         4. Returns razor-sharp HD image (up to 2048px) + pre-extracted OCR lines.
         """
-        target_pitch = float(self.desk_pose.get("pitch_deg", 46.0))
-        target_pan_roll = float(self.desk_pose.get("pan_roll_deg", self.desk_pose.get("roll_deg", -66.3)))
+        target_pitch = float(self.desk_pose.get("pitch_deg", 53.6))
+        pivot_deg = float(self.desk_pose.get("pivot_deg", 180.0))
         req_w, req_h = (3840, 2160) if ultra_hd else (
             int(self.desk_pose.get("width", 2688)),
             int(self.desk_pose.get("height", 1512)),
@@ -442,12 +539,7 @@ class StudioRuntime:
         self.arbiter.ai_hold_mode = True
 
         att = self._osmo.last_attitude if (self._osmo and self.osmo_connected) else None
-        already_on_desk = (
-            self.facing == "back"
-            and att is not None
-            and abs(att.pitch_deg - target_pitch) < 18.0
-            and abs(angle_diff_deg(target_pan_roll, att.roll_deg)) < 45.0
-        )
+        already_on_desk = self.facing == "back" and att is not None and abs(att.pitch_deg - target_pitch) < 18.0
 
         # Preserve current zoom when already on desk and caller asks for zoom=None (0)
         desired_zoom = float(zoom) if zoom is not None else (
@@ -461,18 +553,25 @@ class StudioRuntime:
             if already_on_desk or not self._osmo or not self.osmo_connected or self._osmo.last_attitude is None:
                 return (att.roll_deg if att else None, att.pitch_deg if att else None)
 
-            self._hw_busy_until = time.monotonic() + 8.5
+            self._hw_busy_until = time.monotonic() + 9.5
             try:
-                self.arbiter.log(
-                    "ARM",
-                    f"Pivot IMU mode feuille (Pan/Roll → {target_pan_roll:+.1f}°, Pitch → {target_pitch:+.1f}°)",
-                )
                 if self._osmo.is_landscape() is False:
                     await self._osmo.send_toggle_orientation()
                     await asyncio.sleep(1.0)
-                final_pan = await self._servo_pan_to_imu(target_pan_roll)
+                # Level pitch briefly before 180° horizontal pan so quaternion rotation stays pure horizontal
+                face_pitch = float(self.face_pose.get("pitch_deg", 5.0))
+                if abs(self._osmo.last_attitude.pitch_deg - face_pitch) > 15.0:
+                    await self._servo_pitch_to_imu(face_pitch, timeout_s=1.8)
+                # Save exact head alignment quaternion so return_to_face_mode comes straight back to the user!
+                self._face_quat = self._osmo.last_attitude.quat
+                self.arbiter.log(
+                    "ARM",
+                    f"Pivot géodésique {pivot_deg:.0f}° aligné sur la tête → Pitch feuille {target_pitch:+.1f}°",
+                )
+                turned = await self._pivot_pan_relative_quat(pivot_deg)
                 final_pitch = await self._servo_pitch_to_imu(target_pitch)
-                return final_pan, final_pitch
+                self.arbiter.log("ARM", f"Pivot terminé : ΔPan={turned:.0f}°, Pitch={final_pitch or 0:+.1f}°")
+                return (self._osmo.last_attitude.roll_deg if self._osmo.last_attitude else None), final_pitch
             finally:
                 await self._send_body_speed(0.0, 0.0)
                 self._hw_busy_until = 0.0
@@ -613,19 +712,20 @@ class StudioRuntime:
         async def _return_arm() -> None:
             if not self._osmo or not self.osmo_connected:
                 return
-            await self.recenter_landscape()
-            # Fine-align to calibrated face_pose pan_roll/pitch if recorded
-            if self._osmo.last_attitude is not None and "pan_roll_deg" in self.face_pose:
-                target_pan = float(self.face_pose["pan_roll_deg"])
-                target_pitch = float(self.face_pose.get("pitch_deg", 5.0))
-                if abs(angle_diff_deg(target_pan, self._osmo.last_attitude.roll_deg)) > 15.0:
-                    self._hw_busy_until = time.monotonic() + 5.0
-                    try:
-                        await self._servo_pan_to_imu(target_pan, timeout_s=3.0)
-                        await self._servo_pitch_to_imu(target_pitch, timeout_s=1.8)
-                    finally:
-                        await self._send_body_speed(0.0, 0.0)
-                        self._hw_busy_until = 0.0
+            face_pitch = float(self.face_pose.get("pitch_deg", 5.0))
+            if self._face_quat is not None and self._osmo.last_attitude is not None:
+                self._hw_busy_until = time.monotonic() + 8.5
+                try:
+                    # 1. Lift camera back to head level first, then unwind 180° straight back to user's head!
+                    await self._servo_pitch_to_imu(face_pitch, timeout_s=2.2)
+                    rem = await self._pivot_pan_back_to_quat(self._face_quat, timeout_s=4.5)
+                    self.arbiter.log("ARM", f"Retour géodésique sur la tête terminé (écart={rem:.0f}°)")
+                finally:
+                    await self._send_body_speed(0.0, 0.0)
+                    self._hw_busy_until = 0.0
+                self._face_quat = None
+            else:
+                await self.recenter_landscape()
 
         cam_task = asyncio.create_task(
             self.configure_camera(facing="front", zoom=1.0, width=1280, height=720, bitrate=8_000_000, wait_frame=True)
