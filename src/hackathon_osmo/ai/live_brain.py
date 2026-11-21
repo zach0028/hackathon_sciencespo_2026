@@ -27,6 +27,7 @@ import websockets
 from dotenv import load_dotenv
 
 from hackathon_osmo.paths import ENV_FILE
+from hackathon_osmo.telemetry.recorder import SessionRecorder
 
 load_dotenv(ENV_FILE)
 
@@ -296,6 +297,7 @@ class OpenAILiveBrain:
     on_get_context: ContextProvider | None = None
     on_log: LogCallback | None = None
     on_light: LightCallback | None = None
+    recorder: SessionRecorder | None = None
 
     # Live session state
     session_id: str | None = None
@@ -304,6 +306,8 @@ class OpenAILiveBrain:
     busy: bool = False
     speaking: bool = False
     last_brain_ms: float = 0.0
+    _last_commentary_sent_t: float | None = None
+    _last_user_speech_t: float | None = None
 
     # Conversation memory & UI transcript
     _previous_response_id: str | None = None
@@ -491,6 +495,7 @@ class OpenAILiveBrain:
             delta = str(event.get("delta") or event.get("text") or "")
             if delta:
                 self._user_transcript_buf += delta
+                self._last_user_speech_t = time.monotonic()
 
         elif etype in (
             "session.input_transcript.done",
@@ -499,14 +504,22 @@ class OpenAILiveBrain:
         ):
             final = str(event.get("transcript") or event.get("text") or self._user_transcript_buf).strip()
             self._user_transcript_buf = ""
+            self._last_user_speech_t = time.monotonic()
             if final:
                 self._recent_turns.append({"role": "user", "content": final})
                 self._append_ui_transcript(user=final, reply=None, source="live")
+                if self.recorder:
+                    self.recorder.record_event("LIVE_IN", final)
 
         # --- Real-time output (assistant) transcripts ---
         elif etype in ("session.output_transcript.delta", "response.audio_transcript.delta"):
             delta = str(event.get("delta") or event.get("text") or "")
             if delta:
+                if not self.speaking and self._last_commentary_sent_t is not None:
+                    dt_speech = (time.monotonic() - self._last_commentary_sent_t) * 1000.0
+                    self._last_commentary_sent_t = None
+                    if self.recorder and dt_speech < 10000.0:
+                        self.recorder.record_live_audio_latency(dt_speech)
                 self.speaking = True
                 self._bot_transcript_buf += delta
 
@@ -521,18 +534,30 @@ class OpenAILiveBrain:
             if final:
                 self._recent_turns.append({"role": "assistant", "content": final})
                 self._append_ui_transcript(user=None, reply=final, source="live")
+                if self.recorder:
+                    self.recorder.record_event("LIVE_OUT", final)
 
         elif etype in ("session.output_audio.started", "output_audio_buffer.started"):
+            if self._last_commentary_sent_t is not None:
+                dt_speech = (time.monotonic() - self._last_commentary_sent_t) * 1000.0
+                self._last_commentary_sent_t = None
+                if self.recorder and dt_speech < 10000.0:
+                    self.recorder.record_live_audio_latency(dt_speech)
             self.speaking = True
         elif etype in ("session.output_audio.done", "session.output_audio.stopped", "output_audio_buffer.stopped"):
             self.speaking = False
 
-        # --- Client Delegation Trigger from gpt-live-1.1 -> gpt-6.2-astra ---
+        # --- Client Delegation Trigger from gpt-live-1.1 -> brain ---
         elif etype == "session.delegation.created":
             del_obj = event.get("delegation") if isinstance(event.get("delegation"), dict) else {}
             del_id = str(del_obj.get("id") or event.get("delegation_id") or "")
             if not del_id:
                 return
+            speech_to_del_ms = (
+                round((time.monotonic() - self._last_user_speech_t) * 1000.0, 1)
+                if self._last_user_speech_t is not None
+                else None
+            )
             # 1. Immediate silent acknowledgement (clears auto-filler timers)
             await self._send_sideband(
                 {
@@ -544,7 +569,7 @@ class OpenAILiveBrain:
             )
             # 2. Spawn non-blocking brain task (consume buffer so each delegation gets only fresh speech!)
             prompt_hint = self._consume_user_utterance()
-            task = asyncio.create_task(self._run_delegated_brain(del_id, prompt_hint))
+            task = asyncio.create_task(self._run_delegated_brain(del_id, prompt_hint, speech_to_del_ms))
             self._active_delegations.add(task)
             task.add_done_callback(self._active_delegations.discard)
 
@@ -604,15 +629,26 @@ class OpenAILiveBrain:
             }
         )
 
-    async def _run_delegated_brain(self, delegation_id: str, user_text: str) -> None:
-        """Fulfill a gpt-live-1.1 delegation using gpt-6.2-astra + Pixel Vision + native robot tools."""
+    async def _run_delegated_brain(
+        self,
+        delegation_id: str,
+        user_text: str,
+        speech_to_del_ms: float | None = None,
+    ) -> None:
+        """Fulfill a gpt-live-1.1 delegation using the configured OpenAI vision brain + native robot tools."""
         self._log("BRAIN", f"Délégation {delegation_id[:8]} → {self.brain_model} ({self.reasoning_effort}) : « {user_text[:60]} »")
         if self.on_light:
             self.on_light("curious")
 
         try:
-            res = await self.ask_brain(user_text, include_recent_history=True)
+            res = await self.ask_brain(
+                user_text,
+                include_recent_history=True,
+                delegation_id=delegation_id,
+                speech_to_del_ms=speech_to_del_ms,
+            )
             commentary = res.reply_text or "C'est fait !"
+            self._last_commentary_sent_t = time.monotonic()
             sent = await self._send_sideband(
                 {
                     "type": "session.commentary.append",
@@ -656,14 +692,21 @@ class OpenAILiveBrain:
         *,
         include_recent_history: bool = False,
         speak_via_live: bool = False,
+        delegation_id: str | None = None,
+        speech_to_del_ms: float | None = None,
     ) -> BrainTurnResult:
-        """Run one turn on OpenAI /v1/responses with Pixel Vision + native robot function calling."""
+        """Run one turn on OpenAI /v1/responses with Pixel Vision, native tools & full Flight Recorder telemetry."""
         if not self.api_key:
             raise RuntimeError("OPENAI_API_KEY manquante dans .env")
 
         self.busy = True
         t0 = time.monotonic()
         tools_called: list[str] = []
+        tool_traces: list[dict[str, Any]] = []
+        saved_frames: list[str] = []
+        round1_ms = 0.0
+        round2_ms = 0.0
+        tools_total_ms = 0.0
 
         try:
             robot_ctx = self.on_get_context() if self.on_get_context else ""
@@ -671,6 +714,15 @@ class OpenAILiveBrain:
             # When already in desk mode, pass razor-sharp 2048px HD image directly so follow-up reading takes 1 hop (~2s)!
             raw_jpeg = self.on_get_frame(is_desk) if (self.use_vision and self.on_get_frame) else None
             vision_jpeg = prepare_vision_jpeg(raw_jpeg, high_res=is_desk) if raw_jpeg else None
+
+            if self.recorder and vision_jpeg:
+                in_frame_path = await asyncio.to_thread(
+                    self.recorder.save_frame,
+                    vision_jpeg,
+                    f"turn_in_{'desk' if is_desk else 'front'}",
+                )
+                if in_frame_path:
+                    saved_frames.append(in_frame_path)
 
             # Build compact, cache-friendly user input item
             content: list[dict[str, Any]] = []
@@ -711,6 +763,7 @@ class OpenAILiveBrain:
             if self._previous_response_id:
                 req_body["previous_response_id"] = self._previous_response_id
 
+            t_r1 = time.monotonic()
             resp = await client.post("/responses", json=req_body)
             if resp.status_code == 400 and self._previous_response_id:
                 # Stale previous_response_id fallback
@@ -718,6 +771,7 @@ class OpenAILiveBrain:
                 req_body.pop("previous_response_id", None)
                 resp = await client.post("/responses", json=req_body)
             resp.raise_for_status()
+            round1_ms = round((time.monotonic() - t_r1) * 1000.0, 1)
             data = resp.json()
             self._previous_response_id = data.get("id")
 
@@ -734,81 +788,76 @@ class OpenAILiveBrain:
                     name = call["name"]
                     args = call["arguments"]
                     tools_called.append(f"{name}({', '.join(f'{k}={v}' for k, v in args.items())})")
+                    t_tool = time.monotonic()
+                    tool_saved_frames: list[str] = []
 
-                    if name == "inspect_camera_hd":
+                    result_obj = (
+                        await self.on_execute_tool(name, args)
+                        if self.on_execute_tool
+                        else {"ok": True}
+                    )
+                    tool_dt = round((time.monotonic() - t_tool) * 1000.0, 1)
+                    tools_total_ms += tool_dt
+
+                    images = result_obj.pop("_images", None) if isinstance(result_obj, dict) else None
+                    if images:
                         need_followup_for_info = True
-                        hd_raw = self.on_get_frame(True) if self.on_get_frame else None
-                        hd_jpeg = prepare_vision_jpeg(hd_raw, high_res=True) if hd_raw else None
-                        if hd_jpeg:
-                            b64_hd = base64.b64encode(hd_jpeg).decode("ascii")
-                            tool_outputs.append(
-                                {
-                                    "type": "function_call_output",
-                                    "call_id": call["call_id"],
-                                    "output": [
-                                        {"type": "input_text", "text": "Image HD 1280px capturée à l'instant."},
-                                        {
-                                            "type": "input_image",
-                                            "image_url": f"data:image/jpeg;base64,{b64_hd}",
-                                            "detail": "high",
-                                        },
-                                    ],
-                                }
-                            )
-                        else:
-                            tool_outputs.append(
-                                {
-                                    "type": "function_call_output",
-                                    "call_id": call["call_id"],
-                                    "output": json.dumps({"ok": False, "error": "Aucune image caméra disponible"}),
-                                }
-                            )
-                    else:
-                        result_obj = (
-                            await self.on_execute_tool(name, args)
-                            if self.on_execute_tool
-                            else {"ok": True}
-                        )
-                        images = result_obj.pop("_images", None) if isinstance(result_obj, dict) else None
-                        if images:
-                            need_followup_for_info = True
-                            out_items: list[dict[str, Any]] = [
-                                {"type": "input_text", "text": json.dumps(result_obj, ensure_ascii=False)}
-                            ]
-                            for img_entry in images:
-                                lbl = str(img_entry.get("label") or "Vue caméra")
-                                raw_b = img_entry.get("jpeg")
-                                detail = str(img_entry.get("detail") or "low")
-                                proc_b = prepare_vision_jpeg(raw_b, high_res=(detail == "high")) if raw_b else None
-                                if proc_b:
-                                    b64_img = base64.b64encode(proc_b).decode("ascii")
-                                    out_items.append({"type": "input_text", "text": f"[{lbl}]"})
-                                    out_items.append(
-                                        {
-                                            "type": "input_image",
-                                            "image_url": f"data:image/jpeg;base64,{b64_img}",
-                                            "detail": detail,
-                                        }
+                        out_items: list[dict[str, Any]] = [
+                            {"type": "input_text", "text": json.dumps(result_obj, ensure_ascii=False)}
+                        ]
+                        for idx, img_entry in enumerate(images):
+                            lbl = str(img_entry.get("label") or f"view_{idx}")
+                            raw_b = img_entry.get("jpeg")
+                            detail = str(img_entry.get("detail") or "low")
+                            proc_b = prepare_vision_jpeg(raw_b, high_res=(detail == "high")) if raw_b else None
+                            if proc_b:
+                                if self.recorder:
+                                    fp = await asyncio.to_thread(
+                                        self.recorder.save_frame,
+                                        proc_b,
+                                        f"tool_{name}_{idx+1}",
                                     )
-                            tool_outputs.append(
-                                {
-                                    "type": "function_call_output",
-                                    "call_id": call["call_id"],
-                                    "output": out_items,
-                                }
-                            )
-                        else:
-                            tool_outputs.append(
-                                {
-                                    "type": "function_call_output",
-                                    "call_id": call["call_id"],
-                                    "output": json.dumps(result_obj, ensure_ascii=False),
-                                }
-                            )
+                                    if fp:
+                                        tool_saved_frames.append(fp)
+                                        saved_frames.append(fp)
+                                b64_img = base64.b64encode(proc_b).decode("ascii")
+                                out_items.append({"type": "input_text", "text": f"[{lbl}]"})
+                                out_items.append(
+                                    {
+                                        "type": "input_image",
+                                        "image_url": f"data:image/jpeg;base64,{b64_img}",
+                                        "detail": detail,
+                                    }
+                                )
+                        tool_outputs.append(
+                            {
+                                "type": "function_call_output",
+                                "call_id": call["call_id"],
+                                "output": out_items,
+                            }
+                        )
+                    else:
+                        tool_outputs.append(
+                            {
+                                "type": "function_call_output",
+                                "call_id": call["call_id"],
+                                "output": json.dumps(result_obj, ensure_ascii=False),
+                            }
+                        )
+
+                    tool_traces.append(
+                        {
+                            "round": rounds,
+                            "name": name,
+                            "args": args,
+                            "duration_ms": tool_dt,
+                            "result": result_obj if isinstance(result_obj, dict) else {"raw": str(result_obj)},
+                            "frames": tool_saved_frames,
+                        }
+                    )
 
                 # Latency win: if we already have spoken text AND only fired physical actuators, skip the 2nd LLM hop!
                 if reply_text and not need_followup_for_info:
-                    # Do not chain next turn off a response with unsubmitted tool outputs
                     self._previous_response_id = None
                     break
 
@@ -819,32 +868,56 @@ class OpenAILiveBrain:
                     "previous_response_id": self._previous_response_id,
                     "input": tool_outputs,
                     "tools": ROBOT_TOOLS,
-                    # On the last round, force a spoken text reply (no more tool calls -> never silent!)
                     "tool_choice": "none" if rounds >= 2 else "auto",
                     "max_output_tokens": 350,
                     "store": True,
                 }
+                t_r2 = time.monotonic()
                 resp2 = await client.post("/responses", json=follow_body)
                 resp2.raise_for_status()
+                round2_ms += round((time.monotonic() - t_r2) * 1000.0, 1)
                 data2 = resp2.json()
                 self._previous_response_id = data2.get("id")
                 reply_text, calls = extract_responses_text_and_calls(data2)
 
-            # Safety net: if a 2nd round still emitted tool calls without spoken text, never leave Osmo silent
             if not reply_text and tools_called:
                 reply_text = "C'est fait !"
 
-            dt_ms = round((time.monotonic() - t0) * 1000.0, 0)
+            dt_ms = round((time.monotonic() - t0) * 1000.0, 1)
             self.last_brain_ms = dt_ms
 
             via_live = False
             if speak_via_live and self.sideband_connected and reply_text:
+                self._last_commentary_sent_t = time.monotonic()
                 via_live = await self._send_sideband(
                     {
                         "type": "session.commentary.append",
                         "event_id": f"txt_{uuid.uuid4().hex[:10]}",
                         "delegation_id": None,
                         "content": reply_text,
+                    }
+                )
+
+            if self.recorder:
+                ctx_after = self.on_get_context() if self.on_get_context else ""
+                self.recorder.record_turn(
+                    {
+                        "delegation_id": delegation_id,
+                        "model": self.brain_model,
+                        "reasoning_effort": self.reasoning_effort,
+                        "user_text": user_text,
+                        "reply_text": reply_text,
+                        "context_before": robot_ctx,
+                        "context_after": ctx_after,
+                        "tool_calls": tool_traces,
+                        "frames": saved_frames,
+                        "timings_ms": {
+                            "speech_to_delegation_ms": speech_to_del_ms,
+                            "round1_ms": round1_ms,
+                            "tools_total_ms": round(tools_total_ms, 1),
+                            "round2_ms": round2_ms,
+                            "total_ms": dt_ms,
+                        },
                     }
                 )
 

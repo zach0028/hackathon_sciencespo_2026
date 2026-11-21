@@ -28,6 +28,7 @@ from hackathon_osmo.hardware.osmo_ble import OsmoBleClient, discover_osmo, quat_
 from hackathon_osmo.hardware.pixel_camera import PixelCameraStream, list_adb_devices
 from hackathon_osmo.hardware.pixel_hilight import PixelHiLight
 from hackathon_osmo.paths import CALIBRATION_FILE
+from hackathon_osmo.telemetry.recorder import SessionRecorder
 from hackathon_osmo.vision.face import AppleVisionFaceDetector, FaceBox
 from hackathon_osmo.vision.sheet import AppleVisionSheetDetector, SheetDetection
 
@@ -62,6 +63,7 @@ class StudioRuntime:
         self._camera_gen: int = 0
         self._frame_ready_event = asyncio.Event()
 
+        self.recorder = SessionRecorder()
         self.detector = AppleVisionFaceDetector()
         self.sheet_detector = AppleVisionSheetDetector()
         self._latest_sheet: SheetDetection = SheetDetection()
@@ -70,14 +72,18 @@ class StudioRuntime:
         self.arbiter = MotionArbiter()
         self.arbiter.on_request_recenter = self.recenter_landscape
         self.arbiter.on_light_reaction = self._trigger_light_reaction
+        self.arbiter.on_event = self.recorder.record_event
         self.brain = OpenAILiveBrain(
             on_execute_tool=self.execute_robot_tool,
             on_get_frame=self._get_latest_frame_jpeg,
             on_get_context=self._get_robot_context,
             on_log=self.arbiter.log,
             on_light=self._trigger_light_reaction,
+            recorder=self.recorder,
         )
         self._load_calibration()
+        self._last_motor_cmd: tuple[float, float] = (0.0, 0.0)
+        self._imu_tick: int = 0
 
         self.pixel_serial: str | None = None
         self.camera_status: str = "disconnected"
@@ -252,6 +258,7 @@ class StudioRuntime:
             pan_dps, tilt_dps, cfg, cfg.cal_rotate_deg, cfg.cal_mirror, facing="front"
         )
         await self._osmo.send_speed(yaw_dps=m_yaw, pitch_dps=m_pitch, roll_dps=0.0, duration_ds=2)
+        self._last_motor_cmd = (m_yaw, m_pitch)
         self.osmo_tx_packets += 1
         self.osmo_last_tx = f"imu-servo mY={m_yaw:+.1f} mP={m_pitch:+.1f}"
 
@@ -1213,6 +1220,7 @@ class StudioRuntime:
                             roll_dps=interp.cmd_roll_dps,
                             duration_ds=2,
                         )
+                        self._last_motor_cmd = (motor_yaw, motor_pitch)
                         self.osmo_tx_packets += 1
                         self.osmo_last_tx = f"speed mY={motor_yaw:+.1f} mP={motor_pitch:+.1f}"
                     elif self.arbiter.control_mode == "relative":
@@ -1238,6 +1246,34 @@ class StudioRuntime:
                         await self._osmo.send_raw(pkt)
                         self.osmo_tx_packets += 1
                         self.osmo_last_tx = f"joy yaw={j_yaw} pitch={j_pitch}"
+
+                # Continuous IMU + motor telemetry recording (10 Hz during active motion/pivots, 4 Hz idle)
+                self._imu_tick += 1
+                in_active_motion = (
+                    time.monotonic() < self._hw_busy_until
+                    or self.arbiter.latest.state in ("GESTURE", "MANUAL", "SEARCHING", "TRACKING")
+                )
+                stride = 2 if in_active_motion else 5
+                if self._imu_tick % stride == 0 and self._osmo is not None:
+                    att = self._osmo.last_attitude
+                    interp = self.arbiter.latest
+                    self.recorder.record_imu_sample(
+                        pitch=att.pitch_deg if att else None,
+                        roll=att.roll_deg if att else None,
+                        yaw=att.yaw_deg if att else None,
+                        quat=att.quat if att else None,
+                        state="IMU_SERVO" if time.monotonic() < self._hw_busy_until else interp.state,
+                        facing=self.facing,
+                        zoom=self.camera_zoom,
+                        cmd_pan_dps=interp.cmd_yaw_dps,
+                        cmd_tilt_dps=interp.cmd_pitch_dps,
+                        motor_yaw_dps=self._last_motor_cmd[0],
+                        motor_pitch_dps=self._last_motor_cmd[1],
+                        face_detected=interp.face_detected,
+                        face_xy=(interp.cx, interp.cy) if interp.face_detected else None,
+                        sheet_found=self._latest_sheet.found,
+                        sheet_lines=len(self._latest_sheet.lines),
+                    )
                 await asyncio.sleep(0.05)  # 20 Hz
             except Exception as exc:
                 self.arbiter.log("OSMO", f"Lien BLE interrompu : {exc}")
@@ -1344,5 +1380,6 @@ class StudioRuntime:
                 "lost_policy": cfg.lost_policy,
             },
             "gestures": [{"id": k, "label": v[0]} for k, v in GESTURES.items()],
+            "telemetry": self.recorder.summary(),
             "events": list(self.arbiter.events)[:25],
         }

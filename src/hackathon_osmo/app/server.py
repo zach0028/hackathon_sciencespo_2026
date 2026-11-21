@@ -45,6 +45,11 @@ async def api_status() -> dict[str, Any]:
     return runtime.snapshot()
 
 
+@app.get("/api/telemetry/summary")
+async def api_telemetry_summary() -> dict[str, Any]:
+    return runtime.recorder.summary()
+
+
 class LiveSessionOffer(BaseModel):
     sdp: str
 

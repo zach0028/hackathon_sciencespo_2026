@@ -257,6 +257,7 @@ class MotionArbiter:
     _returned_home: bool = False
     on_request_recenter: Callable[[], Awaitable[None]] | None = None
     on_light_reaction: Callable[[str], None] | None = None
+    on_event: Callable[[str, str], None] | None = None
 
     # Priority-1 override state
     _override_name: str | None = None
@@ -270,6 +271,8 @@ class MotionArbiter:
     def log(self, tag: str, message: str) -> None:
         ts = time.strftime("%H:%M:%S")
         self.events.appendleft({"ts": ts, "tag": tag, "msg": message})
+        if self.on_event:
+            self.on_event(tag, message)
 
     def _slew_limit(self, target: float, current: float, dt: float) -> float:
         max_step = self.config.max_accel_dps2 * dt
