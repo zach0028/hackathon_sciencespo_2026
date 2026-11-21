@@ -545,7 +545,7 @@ class StudioRuntime:
                 break
 
             remaining = max(0.0, target_deg - est_turned)
-            spd = max(30.0, min(125.0, remaining * 2.9))
+            spd = max(30.0, min(95.0, remaining * 2.9))
 
             # Overlap downward pitch during final 55° of pan (~1.0s saved!)
             tilt_cmd = 0.0
@@ -1754,34 +1754,6 @@ class StudioRuntime:
                     interp = self.arbiter.latest
                     cmd_yaw = interp.cmd_yaw_dps
                     cmd_pitch = interp.cmd_pitch_dps
-                    att = self._osmo.last_attitude
-
-                    # Soft mechanical end-stop guard (widened to [-25°, +64°], just inside OM3's hard -30°/+67° stops!)
-                    if att is not None:
-                        if att.pitch_deg <= -25.0 and cmd_pitch > 0.0:
-                            cmd_pitch = 0.0
-                        elif att.pitch_deg >= 64.0 and cmd_pitch < 0.0:
-                            cmd_pitch = 0.0
-                        # Auto-wake if OM3 enters standby/limp protection (pitch drops below -31° while idle)
-                        if (
-                            not self.arbiter.desk_mode
-                            and att.pitch_deg < -31.0
-                            and abs(cmd_yaw) < 1.0
-                            and abs(cmd_pitch) < 1.0
-                            and (time.monotonic() - self._limp_warn_t) > 20.0
-                        ):
-                            self._limp_warn_t = time.monotonic()
-                            self.arbiter.log(
-                                "WARN",
-                                f"Nacelle OM3 en veille/protection (pitch={att.pitch_deg:+.1f}°) — tentative de réveil auto (recenter BLE) !",
-                            )
-                            try:
-                                await self._osmo.send_recenter()
-                                self._last_ble_tx_t = time.monotonic()
-                                self.osmo_tx_packets += 1
-                                self.osmo_last_tx = "auto-wake recenter"
-                            except Exception:
-                                pass
 
                     motor_yaw, motor_pitch = screen_to_motor(
                         cmd_yaw,
@@ -1791,6 +1763,9 @@ class StudioRuntime:
                         self.mirror,
                         facing=self.facing,
                     )
+                    # Hard wire-protocol safety cap: OM3 CmdId 0x0C silently drops packets > 100 deg/s!
+                    motor_yaw = max(-96.0, min(96.0, motor_yaw))
+                    motor_pitch = max(-96.0, min(96.0, motor_pitch))
 
                     if self.arbiter.control_mode == "speed":
                         is_zero = abs(motor_yaw) < 0.2 and abs(motor_pitch) < 0.2 and abs(interp.cmd_roll_dps) < 0.2
