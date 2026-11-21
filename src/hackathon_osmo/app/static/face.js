@@ -114,8 +114,8 @@
   }
 
   const sp = {
-    yaw: makeSpring(-0.22, 72, 11.5),    // rad (left/right 3D head turn)
-    pitch: makeSpring(0.10, 72, 11.5),   // rad (up/down 3D head tilt)
+    yaw: makeSpring(-0.34, 72, 11.5),    // rad (natural 3/4 sculptural angle like reference!)
+    pitch: makeSpring(-0.14, 72, 11.5),  // rad (slight upward dome tilt showing 3D volume)
     roll: makeSpring(-0.04, 65, 11.0),   // rad (expressive head cock)
     scale: makeSpring(1.0, 68, 12.0),    // head size (shrinks smoothly in Desk mode!)
     centerX: makeSpring(0.5, 62, 12.0),  // normalized screen X (moves left in Desk mode!)
@@ -526,34 +526,42 @@
     return [cx + wx * scalePx * persp, cy + wy * scalePx * persp, wz];
   }
 
-  // Exact analytical silhouette of rotated L_p rounded cube using convex dual-norm support!
-  function computeSilhouette(R, cx, cy, scalePx, samples = 128) {
+  // Exact analytical PERSPECTIVE silhouette of rotated L_p rounded cube!
+  // Solves dual-norm support against perspective frustum plane normal (cos a, sin a, r / CAM_DIST)
+  // in 3 fixed-point iterations -> 100% smooth, notch-free perspective contour at any 3D angle.
+  function computeSilhouette(R, cx, cy, scalePx, samples = 144) {
     const pts = [];
     const invP1 = 1 / (LP - 1);
     for (let i = 0; i < samples; i++) {
       const a = (i / samples) * Math.PI * 2;
       const dx = Math.cos(a);
       const dy = Math.sin(a);
-      // Local direction a = R^T * d
-      const [ax, ay, az] = mulRT(R, dx, dy, 0);
-      const lx = Math.sign(ax) * Math.pow(Math.abs(ax), invP1);
-      const ly = Math.sign(ay) * Math.pow(Math.abs(ay), invP1);
-      const lz = Math.sign(az) * Math.pow(Math.abs(az), invP1);
-      const [sx, sy, sz] = toSuperSurface(lx, ly, lz);
-      const [wx, wy, wz] = mulR(R, sx, sy, sz);
+      let dz = 1.0 / CAM_DIST;
+      let wx = 0, wy = 0, wz = 0;
+      for (let it = 0; it < 3; it++) {
+        const [ax, ay, az] = mulRT(R, dx, dy, dz);
+        const lx = Math.sign(ax) * Math.pow(Math.abs(ax), invP1);
+        const ly = Math.sign(ay) * Math.pow(Math.abs(ay), invP1);
+        const lz = Math.sign(az) * Math.pow(Math.abs(az), invP1);
+        const [sx, sy, sz] = toSuperSurface(lx, ly, lz);
+        [wx, wy, wz] = mulR(R, sx, sy, sz);
+        const rProj = (wx * dx + wy * dy) / (CAM_DIST - wz);
+        dz = Math.max(0.05, Math.min(0.6, rProj));
+      }
       const [px, py] = projectWorld(wx, wy, wz, cx, cy, scalePx);
       pts.push({ x: px, y: py, a, dy });
     }
     return pts;
   }
 
-  // Draw dashed 3D meridian curve on the visible front hemisphere of the superellipsoid
-  function drawMeridian(R, axis, cx, cy, scalePx, strokeColor) {
-    const steps = 96;
+  // Draw dashed 3D meridian curve clipped strictly inside the silhouette on the front hemisphere
+  function drawMeridian(R, axis, cx, cy, scalePx, strokeColor, silPath) {
+    const steps = 120;
     ctx.save();
+    ctx.clip(silPath);
     ctx.strokeStyle = strokeColor;
     ctx.lineWidth = 1.05;
-    ctx.setLineDash([3.2, 4.4]);
+    ctx.setLineDash([3.0, 4.2]);
     ctx.beginPath();
     let drawing = false;
 
@@ -569,9 +577,8 @@
       const [nx, ny, nz] = superNormal(sx, sy, sz);
       const [wx, wy, wz] = mulR(R, sx, sy, sz);
       const [wnx, wny, wnz] = mulR(R, nx, ny, nz);
-      // View vector from surface point to camera (0, 0, CAM_DIST)
       const dot = wnx * (0 - wx) + wny * (0 - wy) + wnz * (CAM_DIST - wz);
-      if (dot > 0.08) {
+      if (dot > 0.02) {
         const [px, py] = projectWorld(wx, wy, wz, cx, cy, scalePx);
         if (!drawing) {
           ctx.moveTo(px, py);
@@ -588,64 +595,59 @@
   }
 
   // Draw one architectural CAD eye on the curved 3D front face (45° hatching + vector perimeter nodes!)
+  // Uses dedicated Path2D so clip & perimeter stroke NEVER collide.
   function drawDraftingEye(R, side, cx, cy, scalePx, eyeOpts) {
     const { openFactor, smile, frown, scaleMod, strokeAlpha, nodeColor, hatchColor, rimRgb } = eyeOpts;
-    // Eye center in front-face local coords
-    const ex = side * 0.30;
-    const ey = 0.08 + (side === 1 ? -eyeOpts.asym * 0.04 : eyeOpts.asym * 0.025);
-    const rx = 0.145 * scaleMod;
-    const ry = Math.max(0.024, 0.255 * scaleMod * openFactor);
+    // Tight, iconic vertical capsule proportions matching the 3D CAD reference
+    const ex = side * 0.235;
+    const ey = 0.06 + (side === 1 ? -eyeOpts.asym * 0.04 : eyeOpts.asym * 0.025);
+    const rx = 0.102 * scaleMod;
+    const ry = Math.max(0.022, 0.215 * scaleMod * openFactor);
 
-    // Build rounded capsule perimeter points in local (u, v) plane
     const contour2D = [];
-    const N = 20; // crisp evenly spaced CAD control-point nodes around each eye!
+    const N = 18; // crisp evenly spaced CAD control-point nodes around each eye
     for (let i = 0; i < N; i++) {
       const a = (i / N) * Math.PI * 2;
-      // Superellipse capsule (power 2.8)
       const ca = Math.cos(a), sa = Math.sin(a);
       let u = Math.sign(ca) * Math.pow(Math.abs(ca), 0.72) * rx;
       let v = Math.sign(sa) * Math.pow(Math.abs(sa), 0.72) * ry;
 
-      // Expressive morphs on the eye geometry itself:
-      // 1. Happy arc bend (nod_yes)
       if (smile > 0.05) {
         const normU = u / Math.max(0.01, rx);
-        v -= (1 - normU * normU) * 0.11 * smile;
+        v -= (1 - normU * normU) * 0.095 * smile;
         if (sa > 0) v -= sa * ry * 0.45 * smile;
       }
-      // 2. Skeptical/No slanted upper edge
       if (frown > 0.05 && sa < 0) {
         const slant = side === -1 ? (u / rx) : -(u / rx);
-        v += (0.06 + slant * 0.06) * frown;
+        v += (0.05 + slant * 0.05) * frown;
       }
 
-      // Map (ex + u, ey + v, +1.0) onto the curved front face of the 3D superellipsoid!
       const [sx, sy, sz] = toSuperSurface(ex + u, ey + v, 1.0);
       const [wx, wy, wz] = mulR(R, sx, sy, sz);
       const [px, py] = projectWorld(wx, wy, wz, cx, cy, scalePx);
       contour2D.push({ x: px, y: py });
     }
 
-    // Bounding box of projected eye for 45° hatching
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const p of contour2D) {
+    const eyePath = new Path2D();
+    contour2D.forEach((p, idx) => {
+      if (idx === 0) eyePath.moveTo(p.x, p.y);
+      else eyePath.lineTo(p.x, p.y);
       if (p.x < minX) minX = p.x;
       if (p.x > maxX) maxX = p.x;
       if (p.y < minY) minY = p.y;
       if (p.y > maxY) maxY = p.y;
-    }
+    });
+    eyePath.closePath();
 
+    // 1. Matte dark eye fill
     ctx.save();
-    // 1. Clip to eye silhouette + fill subtle matte dark + draw crisp 45° architectural hatching!
-    ctx.beginPath();
-    contour2D.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-    ctx.closePath();
+    ctx.fillStyle = "rgba(10, 12, 16, 0.94)";
+    ctx.fill(eyePath);
 
-    ctx.fillStyle = "rgba(11, 13, 18, 0.92)";
-    ctx.fill();
-
+    // 2. Strictly clipped 45° diagonal architectural hatching INSIDE eyePath ONLY
     ctx.save();
-    ctx.clip();
+    ctx.clip(eyePath);
     ctx.strokeStyle = hatchColor;
     ctx.lineWidth = 1.05;
     const step = Math.max(4.5, scalePx * 0.038);
@@ -658,20 +660,20 @@
     ctx.stroke();
     ctx.restore();
 
-    // 2. Crisp perimeter wireframe connecting the control vertices
-    ctx.strokeStyle = `rgba(210, 222, 238, ${(0.52 * strokeAlpha).toFixed(3)})`;
+    // 3. Crisp perimeter wireframe around eyePath
+    ctx.strokeStyle = `rgba(210, 222, 238, ${(0.56 * strokeAlpha).toFixed(3)})`;
     ctx.lineWidth = 1.05;
-    ctx.stroke();
+    ctx.stroke(eyePath);
 
-    // 3. Tiny hollow circular CAD vector nodes (○) along the entire eye contour!
-    const nodeR = Math.max(1.6, Math.min(2.8, scalePx * 0.0155));
+    // 4. Tiny hollow circular CAD vector nodes (○) along eye perimeter
+    const nodeR = Math.max(1.55, Math.min(2.6, scalePx * 0.0145));
     for (let i = 0; i < contour2D.length; i++) {
       const p = contour2D[i];
       ctx.beginPath();
       ctx.arc(p.x, p.y, nodeR, 0, Math.PI * 2);
       ctx.fillStyle = "#07080b";
       ctx.fill();
-      ctx.strokeStyle = i % 5 === 0 && live.busy ? `rgba(${rimRgb}, 0.9)` : nodeColor;
+      ctx.strokeStyle = i % 5 === 0 && live.busy ? `rgba(${rimRgb}, 0.95)` : nodeColor;
       ctx.lineWidth = 1.05;
       ctx.stroke();
     }
@@ -716,8 +718,8 @@
     const inputX = pointerFresh ? pointer.x : live.gazeX;
     const inputY = pointerFresh ? pointer.y : live.gazeY;
 
-    let tYaw = -0.18 + inputX * 0.36 + Math.sin(t * 0.65) * 0.03;
-    let tPitch = 0.08 + inputY * 0.26 + Math.cos(t * 0.52) * 0.02;
+    let tYaw = -0.32 + inputX * 0.42 + Math.sin(t * 0.65) * 0.03;
+    let tPitch = -0.12 + inputY * 0.28 + Math.cos(t * 0.52) * 0.02;
     let tRoll = -inputX * 0.05;
     let tScale = 1.0;
     let tCx = 0.5;
@@ -824,30 +826,30 @@
     const cy = H * cyNorm;
     const R = rotMatrix(yaw, pitch, roll);
 
-    const sil = computeSilhouette(R, cx, cy, scalePx, 128);
+    const sil = computeSilhouette(R, cx, cy, scalePx, 144);
+    const silPath = new Path2D();
+    sil.forEach((p, idx) => (idx === 0 ? silPath.moveTo(p.x, p.y) : silPath.lineTo(p.x, p.y)));
+    silPath.closePath();
 
     // Subtle matte fill inside 3D head silhouette
     ctx.save();
-    ctx.beginPath();
-    sil.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-    ctx.closePath();
     const gradFill = ctx.createLinearGradient(cx, cy - scalePx, cx, cy + scalePx);
     gradFill.addColorStop(0, "rgba(18, 21, 28, 0.92)");
     gradFill.addColorStop(1, "rgba(10, 12, 16, 0.96)");
     ctx.fillStyle = gradFill;
-    ctx.fill();
+    ctx.fill(silPath);
 
     // Crisp outer 1px wireframe contour
-    ctx.strokeStyle = `rgba(218, 228, 242, ${(0.55 * anim.wireAlpha).toFixed(3)})`;
+    ctx.strokeStyle = `rgba(218, 228, 242, ${(0.58 * anim.wireAlpha).toFixed(3)})`;
     ctx.lineWidth = 1.15;
-    ctx.stroke();
+    ctx.stroke(silPath);
 
-    // Surgical colored bottom-edge specular rim (mirrors HiLight 8-LED color, inspired by reference!)
+    // Surgical colored bottom-edge specular rim (mirrors HiLight 8-LED color)
     ctx.beginPath();
     let startedRim = false;
     for (let i = 0; i < sil.length; i++) {
       const p = sil[i];
-      if (p.dy > 0.35) {
+      if (p.dy > 0.42) {
         if (!startedRim) { ctx.moveTo(p.x, p.y); startedRim = true; }
         else ctx.lineTo(p.x, p.y);
       } else {
@@ -861,10 +863,10 @@
     ctx.stroke();
     ctx.restore();
 
-    // 5. Dashed 3D construction meridians (vertical + horizontal equator)
-    const merColor = `rgba(188, 200, 218, ${(0.28 * anim.wireAlpha).toFixed(3)})`;
-    drawMeridian(R, "vertical", cx, cy, scalePx, merColor);
-    drawMeridian(R, "horizontal", cx, cy, scalePx, merColor);
+    // 5. Dashed 3D construction meridians clipped cleanly inside silPath
+    const merColor = `rgba(188, 200, 218, ${(0.30 * anim.wireAlpha).toFixed(3)})`;
+    drawMeridian(R, "vertical", cx, cy, scalePx, merColor, silPath);
+    drawMeridian(R, "horizontal", cx, cy, scalePx, merColor, silPath);
 
     // 6. Crisp hollow center origin node (◦) at front pole (0, 0, 1)
     const [owx, owy, owz] = mulR(R, 0, 0, 1.0);
