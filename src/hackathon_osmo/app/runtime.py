@@ -10,6 +10,11 @@ from typing import Any
 import cv2
 import numpy as np
 
+from hackathon_osmo.ai.gemini_brain import (
+    GEMINI_BRAIN_MODELS,
+    GEMINI_LIVE_VOICES,
+    GeminiLiveBrain,
+)
 from hackathon_osmo.ai.live_brain import (
     BRAIN_MODELS,
     LIVE_VOICES,
@@ -96,7 +101,7 @@ class StudioRuntime:
         self.arbiter.on_request_recenter = self.recenter_landscape
         self.arbiter.on_light_reaction = self._trigger_light_reaction
         self.arbiter.on_event = self.recorder.record_event
-        self.brain = OpenAILiveBrain(
+        brain_callbacks: dict[str, Any] = dict(
             on_execute_tool=self.execute_robot_tool,
             on_get_frame=self._get_latest_frame_jpeg,
             on_get_pointer_macro=self._get_pointer_macro_sync,
@@ -108,6 +113,9 @@ class StudioRuntime:
             recorder=self.recorder,
             memory=self.memory,
         )
+        self.openai_brain = OpenAILiveBrain(**brain_callbacks)
+        self.gemini_brain = GeminiLiveBrain(**brain_callbacks)
+        self.ai_provider: str = "gemini" if self.gemini_brain.ready else "openai"
         self._load_calibration()
         self._last_motor_cmd: tuple[float, float] = (0.0, 0.0)
         self._last_body_cmd: tuple[float, float] = (0.0, 0.0)
@@ -1431,15 +1439,38 @@ class StudioRuntime:
 
         return {"ok": False, "error": f"Outil inconnu: {name}"}
 
+    @property
+    def brain(self) -> OpenAILiveBrain | GeminiLiveBrain:
+        return self.gemini_brain if self.ai_provider == "gemini" else self.openai_brain
+
+    async def set_ai_provider(self, provider: str) -> str:
+        clean = "gemini" if str(provider).lower().startswith("gem") else "openai"
+        if clean == self.ai_provider:
+            return self.ai_provider
+        prev = self.brain
+        lang = prev.language
+        use_vision = prev.use_vision
+        await prev.stop_live_session()
+        self.ai_provider = clean
+        cur = self.brain
+        await cur.set_language(lang)
+        cur.use_vision = use_vision
+        self.arbiter.log(
+            "BRAIN",
+            f"Moteur IA basculé sur {'GEMINI (3.8 Live + 4 Neon)' if clean == 'gemini' else 'OPENAI (GPT-Live 1.1 + 6.2)'}",
+        )
+        return self.ai_provider
+
     async def create_live_session(self, sdp_offer: str) -> dict[str, str]:
-        return await self.brain.create_live_session(sdp_offer)
+        return await self.openai_brain.create_live_session(sdp_offer)
 
     async def stop_live_session(self) -> None:
-        await self.brain.stop_live_session()
-        self.arbiter.log("LIVE", "Session GPT-Live raccrochée")
+        await self.openai_brain.stop_live_session()
+        await self.gemini_brain.stop_live_session()
+        self.arbiter.log("LIVE", f"Session Live ({self.ai_provider.upper()}) raccrochée")
 
     async def handle_text_turn(self, user_text: str) -> BrainTurnResult:
-        self.arbiter.log("BRAIN", f"Zach (texte) : « {user_text} »")
+        self.arbiter.log("BRAIN", f"Zach (texte · {self.ai_provider.upper()}) : « {user_text} »")
         return await self.brain.ask_brain(
             user_text,
             include_recent_history=True,
@@ -1448,7 +1479,10 @@ class StudioRuntime:
 
     async def start(self) -> None:
         self._running = True
-        self.arbiter.log("SYSTEM", "Démarrage du studio hackathon_osmo (OpenAI GPT-Live + Astra)")
+        self.arbiter.log(
+            "SYSTEM",
+            f"Démarrage du studio hackathon_osmo (Moteur IA : {self.ai_provider.upper()})",
+        )
         self._tasks = [
             asyncio.create_task(self._camera_loop(), name="camera-loop"),
             asyncio.create_task(self._osmo_loop(), name="osmo-loop"),
@@ -1457,7 +1491,8 @@ class StudioRuntime:
 
     async def stop(self) -> None:
         self._running = False
-        await self.brain.close()
+        await self.openai_brain.close()
+        await self.gemini_brain.close()
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -1858,6 +1893,9 @@ class StudioRuntime:
                 },
             },
             "voice": {
+                "provider": self.ai_provider,
+                "openai_ready": self.openai_brain.ready,
+                "gemini_ready": self.gemini_brain.ready,
                 "ready": self.brain.ready,
                 "live_connected": self.brain.live_connected,
                 "sideband_connected": self.brain.sideband_connected,
@@ -1872,8 +1910,8 @@ class StudioRuntime:
                 "language": self.brain.language,
                 "use_vision": self.brain.use_vision,
                 "last_brain_ms": self.brain.last_brain_ms,
-                "models": BRAIN_MODELS,
-                "voices": LIVE_VOICES,
+                "models": GEMINI_BRAIN_MODELS if self.ai_provider == "gemini" else BRAIN_MODELS,
+                "voices": GEMINI_LIVE_VOICES if self.ai_provider == "gemini" else LIVE_VOICES,
                 "transcript": list(self.brain.transcript)[:16],
             },
             "hilight": {

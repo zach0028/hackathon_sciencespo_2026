@@ -28,6 +28,7 @@
   </div>
 
   <div class="header-actions">
+    <button id="btn-provider" class="live-on" onclick="toggleProvider()" title="Basculer le cerveau d'Osmo entre Google Gemini (3.8 Live + 4 Neon) et OpenAI (GPT-Live + 6.2)">AI : GEMINI</button>
     <button id="btn-lang" class="active" onclick="toggleLanguage()" title="Basculer Osmo entre Full English et Full Français">LANG : EN</button>
     <button onclick="launchPixelFace()" title="Lance l'interface OLED /face sur le Pixel 11 Pro via ADB">PIXEL OLED</button>
     <button onclick="window.open('/face?demo=1','_blank')" title="Aperçu de la tête 3D OLED /face">PREVIEW /FACE</button>
@@ -78,7 +79,7 @@
 
     <div class="panel">
       <div class="panel-head">
-        <span class="panel-title">VOICE ENGINE // GPT-LIVE 1.1 + VISION BRAIN</span>
+        <span id="lbl-voice-title" class="panel-title">VOICE ENGINE // GEMINI 3.8 LIVE + GEMINI 4 NEON</span>
         <div class="panel-meta">
           <span id="lbl-latency" class="mono muted">P50 —</span>
           <span class="sep">·</span>

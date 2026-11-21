@@ -222,8 +222,14 @@ async def api_voice_text(payload: VoiceTextPayload) -> JSONResponse:
         res = await runtime.handle_text_turn(payload.text.strip())
         return JSONResponse(res.__dict__)
     except Exception as exc:
-        runtime.arbiter.log("BRAIN", f"Erreur cerveau OpenAI : {exc}")
+        runtime.arbiter.log("BRAIN", f"Erreur cerveau ({runtime.ai_provider.upper()}) : {exc}")
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.websocket("/ws/gemini_live")
+async def ws_gemini_live(ws: WebSocket) -> None:
+    await ws.accept()
+    await runtime.gemini_brain.run_live_bridge(ws)
 
 
 @app.get("/video_feed")
@@ -303,25 +309,31 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     runtime.arbiter.log("MOTOR", f"Protocole moteur : {mode}")
 
             elif action == "voice_config":
+                if "provider" in msg and str(msg["provider"]) in ("gemini", "openai"):
+                    await runtime.set_ai_provider(str(msg["provider"]))
                 if "brain_model" in msg:
                     runtime.brain.brain_model = str(msg["brain_model"])
-                    runtime.brain._previous_response_id = None
-                    runtime.arbiter.log("BRAIN", f"Cerveau OpenAI : {runtime.brain.brain_model}")
+                    if hasattr(runtime.brain, "_previous_response_id"):
+                        runtime.brain._previous_response_id = None
+                    runtime.arbiter.log("BRAIN", f"Cerveau ({runtime.ai_provider.upper()}) : {runtime.brain.brain_model}")
                 if "reasoning_effort" in msg and msg["reasoning_effort"] in ("low", "medium", "high"):
                     runtime.brain.reasoning_effort = str(msg["reasoning_effort"])
                     runtime.arbiter.log("BRAIN", f"Reasoning effort : {runtime.brain.reasoning_effort}")
                 if "voice" in msg:
                     runtime.brain.voice = str(msg["voice"])
-                    runtime.arbiter.log("LIVE", f"Voix GPT-Live : {runtime.brain.voice} (actif au prochain appel)")
+                    runtime.arbiter.log("LIVE", f"Voix Live ({runtime.ai_provider.upper()}) : {runtime.brain.voice} (actif au prochain appel)")
                 if "language" in msg and str(msg["language"]) in ("en", "fr"):
                     lang = str(msg["language"])
-                    await runtime.brain.set_language(lang)
+                    await runtime.openai_brain.set_language(lang)
+                    await runtime.gemini_brain.set_language(lang)
                     runtime.arbiter.log(
                         "LIVE",
                         "Mode langue Osmo : FULL FRANÇAIS" if lang == "fr" else "Mode langue Osmo : FULL ENGLISH",
                     )
                 if "use_vision" in msg:
-                    runtime.brain.use_vision = bool(msg["use_vision"])
+                    val = bool(msg["use_vision"])
+                    runtime.openai_brain.use_vision = val
+                    runtime.gemini_brain.use_vision = val
                 if msg.get("clear_history"):
                     runtime.brain.reset_memory()
                     runtime.arbiter.log("BRAIN", "Mémoire de conversation réinitialisée")
