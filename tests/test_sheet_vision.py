@@ -94,3 +94,17 @@ def test_pixel_camera_caches_scrcpy_server_push_per_serial() -> None:
         cam._ensure_server_pushed("/tmp/scrcpy-server", "5.0.1", force=True)
         assert m_run.call_count == 4
     PixelCameraStream._pushed_devices.clear()
+
+
+def test_pixel_oled_face_assets_exist_and_serve_cleanly() -> None:
+    from hackathon_osmo.paths import STATIC_DIR
+
+    for fname in ("face.html", "face.css", "face.js", "face-manifest.json"):
+        p = STATIC_DIR / fname
+        assert p.exists(), f"Missing {fname}"
+        assert p.stat().st_size > 100
+    html = (STATIC_DIR / "face.html").read_text(encoding="utf-8")
+    assert 'id="face-canvas"' in html
+    assert 'id="desk-layer"' in html
+    assert 'id="focus-layer"' in html
+

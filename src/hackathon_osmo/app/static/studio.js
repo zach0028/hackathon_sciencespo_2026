@@ -59,6 +59,17 @@ function toggleLiveMotors() {
   if (!state) return;
   send({ action: 'set_live_motors', enabled: !state.osmo.live_motors });
 }
+async function launchPixelFace() {
+  try {
+    const res = await fetch('/api/pixel/launch_face', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      alert('Impossible de lancer /face sur le Pixel : ' + (data.error || res.status));
+    }
+  } catch (err) {
+    alert('Erreur réseau : ' + err.message);
+  }
+}
 function rotateNext() {
   if (!state) return;
   send({ action: 'camera', rotate_deg: (state.camera.rotate_deg + 90) % 360 });

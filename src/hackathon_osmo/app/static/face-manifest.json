@@ -1,0 +1,9 @@
+{
+  "name": "Osmo Companion",
+  "short_name": "Osmo",
+  "start_url": "/face",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#000000",
+  "theme_color": "#000000"
+}

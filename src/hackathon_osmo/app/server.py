@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import subprocess
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
@@ -17,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from hackathon_osmo.app.runtime import StudioRuntime
+from hackathon_osmo.hardware.pixel_camera import find_adb, list_adb_devices
 from hackathon_osmo.paths import STATIC_DIR
 
 runtime = StudioRuntime()
@@ -38,6 +40,44 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+
+
+@app.get("/face", response_class=HTMLResponse)
+async def pixel_face() -> HTMLResponse:
+    """Pure #000000 OLED Adaptive Desk Companion interface for the Pixel 11 Pro screen."""
+    return HTMLResponse((STATIC_DIR / "face.html").read_text(encoding="utf-8"))
+
+
+@app.post("/api/pixel/launch_face")
+async def api_launch_pixel_face(port: int = 8765) -> JSONResponse:
+    """Expose Studio over adb reverse and launch the /face OLED Companion UI on the Pixel."""
+    adb = find_adb()
+    if not adb:
+        return JSONResponse({"ok": False, "error": "adb introuvable"}, status_code=500)
+    serial = runtime.pixel_serial
+    if not serial:
+        devs = [d for d in list_adb_devices() if d.state == "device"]
+        serial = devs[0].serial if devs else None
+    if not serial:
+        return JSONResponse({"ok": False, "error": "Aucun Pixel connecté en ADB"}, status_code=400)
+
+    url = f"http://127.0.0.1:{int(port)}/face"
+
+    def _launch_sync() -> None:
+        subprocess.run([adb, "-s", serial, "reverse", f"tcp:{int(port)}", f"tcp:{int(port)}"], check=True, capture_output=True)
+        subprocess.run(
+            [adb, "-s", serial, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url],
+            check=True,
+            capture_output=True,
+        )
+
+    try:
+        await asyncio.to_thread(_launch_sync)
+        runtime.arbiter.log("PIXEL", f"Interface OLED /face lancée sur Pixel ({serial}) via adb reverse")
+        return JSONResponse({"ok": True, "serial": serial, "url": url})
+    except Exception as exc:
+        runtime.arbiter.log("PIXEL", f"Erreur lancement /face sur Pixel : {exc}")
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
 @app.get("/api/status")
