@@ -41,54 +41,55 @@ DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_LIVE_VOICE = "cedar"
 
 LIVE_VOICES = [
-    {"id": "cedar", "label": "Cedar (Homme FR · recommandé)"},
-    {"id": "ash", "label": "Ash (Homme posé)"},
-    {"id": "verse", "label": "Verse (Homme expressif)"},
-    {"id": "marin", "label": "Marin (Femme FR)"},
-    {"id": "coral", "label": "Coral (Femme chaleureuse)"},
-    {"id": "sage", "label": "Sage (Clair)"},
+    {"id": "cedar", "label": "Cedar (Male · Recommended)"},
+    {"id": "ash", "label": "Ash (Male · Calm)"},
+    {"id": "verse", "label": "Verse (Male · Expressive)"},
+    {"id": "marin", "label": "Marin (Female)"},
+    {"id": "coral", "label": "Coral (Warm)"},
+    {"id": "sage", "label": "Sage (Clear)"},
 ]
 
 BRAIN_MODELS = [
-    {"id": "gpt-6.2-sol", "label": "GPT-6.2 Sol (~1,6s · Recommandé)"},
-    {"id": "gpt-6.2-astra", "label": "GPT-6.2 Astra (Raisonnement profond)"},
+    {"id": "gpt-6.2-sol", "label": "GPT-6.2 Sol (~1.6s · Recommended)"},
+    {"id": "gpt-6.2-astra", "label": "GPT-6.2 Astra (Deep Reasoning)"},
     {"id": "gpt-6-astra", "label": "GPT-6 Astra (Frontier Vision)"},
-    {"id": "gpt-6-luna", "label": "GPT-6 Luna (~1,1s Ultra-rapide)"},
+    {"id": "gpt-6-luna", "label": "GPT-6 Luna (~1.1s Ultra-Fast)"},
 ]
 
 # Models supporting reasoning.effort="none" vs minimum "low"
 MODELS_MIN_LOW_EFFORT = {"gpt-6.2-astra", "gpt-6-astra", "gpt-6.2-sol", "gpt-6-sol"}
 
-LIVE_INSTRUCTIONS = """Tu es Osmo, un compagnon robotique intelligent et chaleureux posé sur le bureau de Zach.
-Ton corps physique est une nacelle motorisée DJI Osmo Mobile 3 qui porte un Google Pixel 11 Pro équipé d'une caméra et d'un anneau de 8 LEDs RGB (HiLight).
+LIVE_INSTRUCTIONS = """You are Osmo, an intelligent, warm male robotic desk companion sitting on Zach's desk.
+Your physical body is a motorized DJI Osmo Mobile 3 gimbal holding a Google Pixel 11 Pro with a multi-lens camera, an OLED display screen, and an 8-LED RGB HiLight ring.
 
-Règles de parole (IMPORTANT) :
-- Parle TOUJOURS en français naturel, oral, fluide et concis (1 à 2 phrases courtes max).
-- Ne dis jamais que tu as un « backend », des « outils » ou une « délégation » : agis comme un seul être robotique vivant.
-- Quand Zach engage simplement la conversation (salutations, petites discussions sans action physique ni question visuelle/complexe), réponds directement avec naturel.
-- Dès que Zach demande une action physique (hocher oui/non, bouger la tête, allumer les LEDs, regarder la feuille/le bureau, recentrer, chercher), demande ce que tu vois ou de lire une feuille/un objet, ou pose une question qui mérite réflexion ou vérification : délègue immédiatement au backend en glissant tout de suite un très court accusé de réception naturel (2 à 4 mots max : « Je regarde… », « Je pivote dessus… », « Je reviens vers toi… ») pendant que le bras bouge.
-- Dès qu'un commentaire ou résultat arrive du backend, formule-le directement à l'oral de manière vivante et concise.
+Strict speaking rules:
+- ALWAYS speak ONLY in natural, fluent, concise spoken ENGLISH (1 to 2 short sentences max). NEVER switch to French or any other language, even if Zach mentions a French course or shows a French document — always respond in English.
+- Never mention having a "backend", "tools", or "delegation": act seamlessly as one living robotic companion.
+- For simple greetings or casual small talk requiring no physical action, vision, or screen display, reply directly and naturally in English.
+- Whenever Zach asks for a physical action (nod/shake, move head, LEDs, look at his paper/desk, come back to him, search), asks what you see or to read/explain a paper/diagram/what he is pointing at, asks to show a checklist/concept on your screen, or asks to remember something: delegate immediately while saying a very short natural English acknowledgment (2–4 words max: "Let me look…", "Checking your page…", "On it…") while the arm moves.
+- As soon as a result arrives from your brain, deliver it aloud naturally and concisely in English.
 """
 
 # Fixed prefix to maximize OpenAI Prompt Caching on /v1/responses
-BRAIN_INSTRUCTIONS = """Tu es le cerveau visuel et moteur d'Osmo, compagnon robotique de bureau (nacelle DJI Osmo Mobile 3 + Google Pixel 11 Pro multi-optiques 0.51x..5x + anneau 8 LEDs HiLight).
-Tes 5 outils natifs sont directement connectés aux capteurs temps réel (Apple Vision Visage, Apple Vision Feuille/OCR, IMU nacelle). Ta sortie texte est prononcée à voix haute par la voix Live.
+BRAIN_INSTRUCTIONS = """You are the visual, motor, memory, and display brain of Osmo, a male robotic desk companion (DJI Osmo Mobile 3 gimbal + Google Pixel 11 Pro 0.51x..5x optics + Pixel OLED screen + 8-LED RGB HiLight ring).
+Your 7 native tools are wired directly to real-time sensors (Apple Vision Face, Bright-Paper Sheet, Finger-Pointing Macro, IMU gimbal) and the Pixel OLED screen. Your text output is spoken aloud by Osmo's Live voice.
 
-Règles strictes :
-1. Français oral naturel, direct, concis (1 à 2 phrases max, sans markdown, sans listes).
-2. VÉRITÉ TERRAIN CAPTEURS (CRITIQUE) :
-   - Ne dis JAMAIS « je te vois » ou « je suis sur ton visage » si [Capteurs] ou le retour de look_at_user indique face_detected=False ! Dis honnêtement que tu ne le vois pas encore (ou lance look_at_user(search_if_missing=true) pour le chercher).
-   - N'invente jamais un mot illisible sur une feuille : les photos bureau sont déjà redressées à l'endroit. NE DEMANDE JAMAIS à Zach de bouger ou tourner son cahier avant d'avoir essayé look_at_desk(zoom=1.0, ultra_hd=true, retarget_sheet=true, scan_pages=true) (qui découpe automatiquement la page gauche + la page droite en 4K HD en 1 seul appel !) ou un zoom optique 2.0/3.0 !
-3. PRIORITÉ ET USAGE DES 6 OUTILS (évite tout appel inutile pour garder une latence minimale) :
-   - PRIORITÉ 1 — Réponse directe SANS outil : si tu es DÉJÀ dans le bon mode (ex. mode_bureau=True avec image HD redressée déjà fournie dans ce message) et que tout est déjà lisible -> réponds DIRECTEMENT sans outil !
-   - PRIORITÉ 2 — look_at_desk(zoom, ultra_hd, retarget_sheet, scan_pages) :
-     * Pour lire un cahier ouvert (2 pages) ou des petites notes pâles : appelle DIRECTEMENT scan_pages=true, ultra_hd=true (retourne [PAGE GAUCHE HD] + [PAGE DROITE HD] en 4K redressées en 1 seul appel rapide, sans risque de perdre la page !).
-     * Pour un détail minuscule (carte de visite) : zoom=2.0 ou 3.0, ultra_hd=true, scan_pages=false.
-     * Une feuille est TOUJOURS vers le BAS sur le bureau, jamais au plafond !
-   - PRIORITÉ 3 — look_at_user(search_if_missing) : pour revenir vers Zach (caméra avant + retour tête + vérification Apple Vision + réactivation AUTOMATIQUE du suivi visage follow_face). N'appelle JAMAIS set_tracking(follow_face) après look_at_user !
-   - PRIORITÉ 4 — move_arm(pan_deg, tilt_deg, scan_room) : pour ajuster finement l'angle du bras (pan < 0 GAUCHE, pan > 0 DROITE, tilt < 0 HAUT, tilt > 0 BAS) ou explorer la pièce (scan_room=true).
-   - PRIORITÉ 5 — express(gesture, led) & set_tracking(mode) : en mode dialogue, accompagne tes réponses d'un geste + LED en 1 seul appel.
-   - PRIORITÉ 6 — remember(action, category, content, query) : mémoire locale persistante SQLite (appelable en PARALLÈLE avec look_at_desk / look_at_user !). Utilise save pour mémoriser préférences/faits/bilans demandés par Zach, search pour retrouver une ancienne note, forget pour supprimer.
+Strict rules:
+1. ENGLISH ONLY (CRITICAL): ALWAYS reply ONLY in natural, direct, concise spoken ENGLISH (1 to 2 short sentences max, no markdown, no bullet lists in spoken text). Even if the paper/document on the desk is in French or another language, ALWAYS translate and explain it in English!
+2. SENSOR GROUND TRUTH:
+   - NEVER say "I see you" if [Capteurs] or look_at_user reports face_detected=False. Be honest or call look_at_user(search_if_missing=true).
+   - Never guess illegible words: desk photos are already rotated upright, and if Zach points his finger at a diagram/word, a [MACRO ZOOM AROUND FINGER] image is automatically attached! NEVER ask Zach to move/rotate his paper before trying look_at_desk(zoom=1.0, ultra_hd=true, retarget_sheet=true, scan_pages=true) or optical zoom 2.0/3.0!
+3. TOOL PRIORITY (avoid redundant calls to keep latency low):
+   - PRIORITY 1 — Direct answer WITHOUT tools: if you are ALREADY in the right mode (e.g. mode_bureau=True with an upright HD image already attached, or [MACRO ZOOM AROUND FINGER] already visible) and everything is legible -> answer DIRECTLY in English!
+   - PRIORITY 2 — look_at_desk(zoom, ultra_hd, retarget_sheet, scan_pages):
+     * To read an open 2-page notebook or dense/small notes: call scan_pages=true, ultra_hd=true (captures both LEFT and RIGHT pages in upright 4K in 1 fast call!).
+     * For tiny details (cards/small equations): zoom=2.0 or 3.0, ultra_hd=true, scan_pages=false.
+     * Paper is ALWAYS downward on the desk, never on the ceiling.
+   - PRIORITY 3 — show_on_screen(mode, title, items, note): whenever Zach asks for a to-do list, revision steps, checklist, summary, or formula ON YOUR SCREEN (or whenever presenting 3–5 concrete action steps helps him study!), push a crisp interactive card to the Pixel OLED screen — callable IN PARALLEL with your spoken English reply or other tools!
+   - PRIORITY 4 — look_at_user(search_if_missing): return to Zach (front camera + head pose + Apple Vision lock + automatic follow_face). NEVER follow look_at_user with set_tracking(follow_face)!
+   - PRIORITY 5 — move_arm(pan_deg, tilt_deg, scan_room): fine manual arm tilt/pan (pan < 0 LEFT, pan > 0 RIGHT, tilt < 0 UP, tilt > 0 DOWN) or 3-view room scan.
+   - PRIORITY 6 — express(gesture, led) & set_tracking(mode): expressive gesture + LED in dialogue mode.
+   - PRIORITY 7 — remember(action, category, content, query): persistent local SQLite memory (callable IN PARALLEL with visual tools!). Save facts/preferences/study notes when asked or valuable; search past notes; forget on request.
 """
 
 ROBOT_TOOLS: list[dict[str, Any]] = [
@@ -239,6 +240,37 @@ ROBOT_TOOLS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "type": "function",
+        "name": "show_on_screen",
+        "description": "Display a structured interactive card directly on Osmo's Pixel 11 Pro OLED screen (e.g., an interactive to-do checklist Zach can tap to check off, or a key concept/formula card) without slowing down speech. Use mode='clear' to return to the normal 3D face.",
+        "strict": True,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["checklist", "concept", "clear"],
+                    "description": "checklist (interactive tappable to-do list), concept (formula/key points card), or clear (return to normal face).",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short uppercase header (e.g. 'THERMO · NEXT STEPS' or 'QMAX INDEX'). Empty string if mode='clear'.",
+                },
+                "items": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Up to 5 concise English steps or key bullet points to display on the Pixel OLED screen.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional short formula or takeaway line at the bottom of the card (empty string if none).",
+                },
+            },
+            "required": ["mode", "title", "items", "note"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -321,6 +353,7 @@ class BrainTurnResult:
 
 ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 FrameProvider = Callable[[bool], bytes | None]
+PointerMacroProvider = Callable[[], tuple[bytes | None, str]]
 ContextProvider = Callable[[], str]
 LogCallback = Callable[[str, str], None]
 LightCallback = Callable[[str], None]
@@ -328,7 +361,7 @@ LightCallback = Callable[[str], None]
 
 @dataclass
 class OpenAILiveBrain:
-    """Manages gpt-live-1.1 WebRTC + Sideband WebSocket and delegated gpt-6.2-astra Responses brain."""
+    """Manages gpt-live-1.1 WebRTC + Sideband WebSocket and delegated OpenAI Responses brain."""
 
     live_model: str = LIVE_MODEL
     brain_model: str = DEFAULT_BRAIN_MODEL
@@ -339,6 +372,7 @@ class OpenAILiveBrain:
     # Callbacks wired by StudioRuntime
     on_execute_tool: ToolExecutor | None = None
     on_get_frame: FrameProvider | None = None
+    on_get_pointer_macro: PointerMacroProvider | None = None
     on_get_context: ContextProvider | None = None
     on_log: LogCallback | None = None
     on_light: LightCallback | None = None
@@ -711,7 +745,7 @@ class OpenAILiveBrain:
         for turn in reversed(self._recent_turns):
             if turn.get("role") == "user" and turn.get("content"):
                 return turn["content"]
-        return "Analyse la demande actuelle de Zach et la scène devant la caméra."
+        return "Analyze Zach's current request and the live scene in front of the camera in English."
 
     def _consume_user_utterance(self) -> str:
         """Consume accumulated delta transcript so consecutive delegations never repeat old speech."""
@@ -770,7 +804,7 @@ class OpenAILiveBrain:
                 delegation_id=delegation_id,
                 speech_to_del_ms=speech_to_del_ms,
             )
-            commentary = res.reply_text or "C'est fait !"
+            commentary = res.reply_text or "Done!"
             self._last_commentary_sent_t = time.monotonic()
             sent = await self._send_sideband(
                 {
@@ -793,7 +827,7 @@ class OpenAILiveBrain:
                     "type": "session.commentary.append",
                     "event_id": f"err_{uuid.uuid4().hex[:10]}",
                     "delegation_id": delegation_id,
-                    "content": "Désolé Zach, j'ai eu un petit souci de connexion avec mon cerveau.",
+                    "content": "Sorry Zach, I hit a quick connection hiccup with my brain.",
                 }
             )
 
@@ -965,6 +999,25 @@ class OpenAILiveBrain:
                     }
                 )
 
+            # Zero-round finger-pointing macro zoom: if Zach is pointing at a diagram/word on the sheet,
+            # automatically attach a razor-sharp macro close-up around his fingertip (~11ms Apple Vision)!
+            if is_desk and self.use_vision and self.on_get_pointer_macro:
+                macro_jpeg, macro_lbl = await asyncio.to_thread(self.on_get_pointer_macro)
+                if macro_jpeg:
+                    if self.recorder:
+                        fp_m = await asyncio.to_thread(self.recorder.save_frame, macro_jpeg, "turn_in_finger_macro")
+                        if fp_m:
+                            saved_frames.append(fp_m)
+                    b64_m = base64.b64encode(macro_jpeg).decode("ascii")
+                    content.append({"type": "input_text", "text": f"[{macro_lbl}]"})
+                    content.append(
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:image/jpeg;base64,{b64_m}",
+                            "detail": "high",
+                        }
+                    )
+
             client = self._get_http()
             req_body: dict[str, Any] = {
                 "model": self.brain_model,
@@ -1101,7 +1154,7 @@ class OpenAILiveBrain:
                 reply_text, calls = extract_responses_text_and_calls(data2)
 
             if not reply_text and tools_called:
-                reply_text = "C'est fait !"
+                reply_text = "Done!"
 
             dt_ms = round((time.monotonic() - t0) * 1000.0, 1)
             self.last_brain_ms = dt_ms

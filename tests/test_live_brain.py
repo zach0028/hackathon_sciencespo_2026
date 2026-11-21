@@ -19,7 +19,15 @@ from hackathon_osmo.ai.live_brain import (
 
 def test_robot_tools_compact_five_tool_hierarchy() -> None:
     names = [t["name"] for t in ROBOT_TOOLS]
-    assert names == ["look_at_user", "look_at_desk", "move_arm", "express", "set_tracking", "remember"]
+    assert names == [
+        "look_at_user",
+        "look_at_desk",
+        "move_arm",
+        "express",
+        "set_tracking",
+        "remember",
+        "show_on_screen",
+    ]
     for t in ROBOT_TOOLS:
         assert t["strict"] is True
         assert t["parameters"]["additionalProperties"] is False

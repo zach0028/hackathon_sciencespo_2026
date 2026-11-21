@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 
@@ -166,6 +167,44 @@ def slice_desk_spread_tiles(
         ("PAGE GAUCHE HD (redressée)", left_tile),
         ("PAGE DROITE HD (redressée)", right_tile),
     ]
+
+
+@dataclass
+class PointingTarget:
+    """Detected index fingertip & pointing target on the upright desk document (0..1 top-left coords)."""
+
+    found: bool = False
+    tip_x: float = 0.0
+    tip_y: float = 0.0
+    target_x: float = 0.0
+    target_y: float = 0.0
+    confidence: float = 0.0
+    vision_ms: float = 0.0
+
+
+def crop_pointing_macro(
+    upright_bgr: np.ndarray,
+    ptr: PointingTarget,
+    *,
+    box_frac: float = 0.42,
+    enhance: bool = True,
+) -> np.ndarray | None:
+    """Crop a razor-sharp macro close-up centered on what the user's index finger is pointing at."""
+    if not ptr.found or upright_bgr is None or upright_bgr.size == 0:
+        return None
+    h, w = upright_bgr.shape[:2]
+    half_w = max(180, int(w * box_frac * 0.5))
+    half_h = max(180, int(h * box_frac * 0.5))
+    cx = int(max(0.0, min(1.0, ptr.target_x)) * w)
+    cy = int(max(0.0, min(1.0, ptr.target_y)) * h)
+    x1 = max(0, min(w - 2 * half_w, cx - half_w)) if w > 2 * half_w else 0
+    y1 = max(0, min(h - 2 * half_h, cy - half_h)) if h > 2 * half_h else 0
+    x2 = min(w, x1 + 2 * half_w)
+    y2 = min(h, y1 + 2 * half_h)
+    patch = upright_bgr[y1:y2, x1:x2]
+    if patch.size == 0:
+        return None
+    return enhance_document_clarity(patch, amount=0.40) if enhance else patch
 
 
 @dataclass
@@ -368,3 +407,60 @@ class AppleVisionSheetDetector:
             det.found = True
 
         return det
+
+    def detect_pointing_finger(self, upright_bgr: np.ndarray, *, min_conf: float = 0.55) -> PointingTarget:
+        """Detect an index fingertip pointing at the document using Apple Vision Hand Pose (~11 ms on ANE)."""
+        if not hasattr(Vision, "VNDetectHumanHandPoseRequest") or upright_bgr is None or upright_bgr.size == 0:
+            return PointingTarget()
+        t0 = time.monotonic()
+        h, w = upright_bgr.shape[:2]
+        scale = min(1.0, 640.0 / max(1, max(h, w)))
+        small = (
+            cv2.resize(upright_bgr, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+            if scale < 0.99
+            else upright_bgr
+        )
+        cg_image, _keep = self._to_cgimage(small)
+        if cg_image is None:
+            return PointingTarget()
+
+        req = Vision.VNDetectHumanHandPoseRequest.alloc().init()
+        req.setMaximumHandCount_(1)
+        handler = Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(cg_image, None)
+        ok, _err = handler.performRequests_error_([req], None)
+        ms = round((time.monotonic() - t0) * 1000.0, 1)
+        if not ok:
+            return PointingTarget(vision_ms=ms)
+
+        results = list(req.results() or [])
+        if not results:
+            return PointingTarget(vision_ms=ms)
+
+        obs = results[0]
+        tip, _ = obs.recognizedPointForKey_error_(Vision.VNHumanHandPoseObservationJointNameIndexTip, None)
+        if tip is None or float(tip.confidence()) < min_conf:
+            return PointingTarget(vision_ms=ms)
+
+        tip_x = float(tip.location().x)
+        tip_y = 1.0 - float(tip.location().y)
+        # Project slightly ahead of the fingertip along IndexPIP -> IndexTip so the macro crop centers on the graphic/word!
+        target_x, target_y = tip_x, tip_y
+        pip, _ = obs.recognizedPointForKey_error_(Vision.VNHumanHandPoseObservationJointNameIndexPIP, None)
+        if pip is not None and float(pip.confidence()) >= 0.4:
+            pip_x = float(pip.location().x)
+            pip_y = 1.0 - float(pip.location().y)
+            dx, dy = tip_x - pip_x, tip_y - pip_y
+            norm = math.hypot(dx, dy)
+            if norm > 0.015:
+                target_x = max(0.05, min(0.95, tip_x + (dx / norm) * 0.075))
+                target_y = max(0.05, min(0.95, tip_y + (dy / norm) * 0.075))
+
+        return PointingTarget(
+            found=True,
+            tip_x=round(tip_x, 3),
+            tip_y=round(tip_y, 3),
+            target_x=round(target_x, 3),
+            target_y=round(target_y, 3),
+            confidence=round(float(tip.confidence()), 2),
+            vision_ms=ms,
+        )

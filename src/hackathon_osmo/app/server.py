@@ -347,6 +347,15 @@ async def ws_endpoint(ws: WebSocket) -> None:
             elif action == "save_desk_pose":
                 runtime.save_current_desk_pose()
 
+            elif action == "toggle_screen_item":
+                idx = int(msg.get("index", -1))
+                items = runtime.screen_card.get("items") or []
+                if 0 <= idx < len(items):
+                    items[idx]["done"] = not bool(items[idx].get("done"))
+
+            elif action == "clear_screen_card":
+                runtime.screen_card = {"mode": "none", "title": "", "items": [], "note": "", "updated_at": 0.0}
+
             elif action == "pid":
                 cfg = runtime.arbiter.config
                 if "kp" in msg:

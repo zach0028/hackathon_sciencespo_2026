@@ -18,6 +18,10 @@
   const elDeskStatus = document.getElementById("desk-status-label");
   const elDeskOptics = document.getElementById("desk-optics");
   const elDeskReply = document.getElementById("desk-reply");
+  const elScreenList = document.getElementById("screen-list");
+  const elScreenNote = document.getElementById("screen-note");
+  const btnClearCard = document.getElementById("btn-clear-card");
+  const elDeskHintRight = document.getElementById("desk-hint-right");
   const elDeskScanBar = document.getElementById("desk-scan-bar");
   const elDeskHiLight = document.getElementById("desk-hilight-label");
   const elToast = document.getElementById("toast");
@@ -125,7 +129,9 @@
     bargeInUntil: 0,
     greetUntil: 0,
     faceLostAt: 0,
-    drowsyLevel: 0       // 0..1 smooth lid droop between 14s and 25s idle
+    drowsyLevel: 0,      // 0..1 smooth lid droop between 14s and 25s idle
+    // Interactive OLED checklist / concept card pushed via show_on_screen tool
+    screenCard: { mode: "none", title: "", items: [], note: "" }
   };
 
   function wrapDeg(deg) {
@@ -277,6 +283,9 @@
     live.width = Number(cam.width || 1280);
     live.height = Number(cam.height || 720);
     live.reply = reply;
+    if (s.screen && typeof s.screen === "object") {
+      live.screenCard = s.screen;
+    }
 
     if (searching) {
       const dir = Math.sign(vis.cmd_yaw_dps || 0) || Math.sin(performance.now() * 0.003);
@@ -294,9 +303,13 @@
     const drowsy = !manualDnd && !liveOn && !speaking && !busy && !isDesk && !searching && idleForMs > 14000 && idleForMs <= 25000;
     live.drowsyLevel = drowsy ? Math.min(1, (idleForMs - 14000) / 11000) : 0;
 
-    if (isDesk) {
+    const hasScreenCard = live.screenCard && live.screenCard.mode && live.screenCard.mode !== "none";
+    if (isDesk || hasScreenCard) {
       live.mode = "desk";
-      if (live.opticalPhase === "focusing") {
+      if (hasScreenCard) {
+        live.mood = live.screenCard.mode === "checklist" ? "desk_locked" : "listen";
+        live.stateLabel = live.screenCard.mode === "checklist" ? "CHECKLIST" : "CONCEPT CARD";
+      } else if (live.opticalPhase === "focusing") {
         live.mood = "focusing";
         live.stateLabel = "AF // FOCUSING";
       } else if (live.microPhase === "reading_sheet" || busy) {
@@ -385,14 +398,42 @@
     const showDesk = live.mode === "desk";
     elDeskLayer.classList.toggle("hidden", !showDesk);
     if (showDesk) {
-      elDeskLed.classList.toggle("locked", live.sheetFound && !live.busy);
-      elDeskStatus.textContent = live.busy
-        ? "DESK // ANALYZING SHEET"
-        : live.sheetFound
-          ? "DESK // SHEET LOCKED"
-          : "DESK // CAMERA ACTIVE";
-      elDeskOptics.textContent = `${live.zoom.toFixed(live.zoom % 1 ? 2 : 1)}× · ${live.width}×${live.height}`;
-      elDeskReply.textContent = live.reply || "Pose ta feuille devant la caméra et pose-moi ta question.";
+      const card = live.screenCard || { mode: "none", title: "", items: [], note: "" };
+      const hasCard = card.mode && card.mode !== "none";
+      if (hasCard) {
+        elDeskLed.classList.toggle("locked", card.mode === "checklist");
+        elDeskStatus.textContent = card.title || (card.mode === "checklist" ? "OSMO // TO-DO LIST" : "OSMO // CONCEPT");
+        elDeskOptics.textContent = live.deskMode
+          ? `${live.zoom.toFixed(live.zoom % 1 ? 2 : 1)}× · ${live.width}×${live.height}`
+          : card.mode.toUpperCase();
+        elDeskReply.classList.add("hidden");
+        elScreenList.classList.remove("hidden");
+        const items = Array.isArray(card.items) ? card.items : [];
+        elScreenList.innerHTML = items.map((it, idx) => {
+          const done = Boolean(it.done);
+          const mark = card.mode === "checklist" ? (done ? "[✓]" : "[ ]") : `0${idx + 1}`;
+          const esc = String(it.text || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+          return `<li class="screen-item ${done ? "done" : ""}" data-idx="${idx}"><span class="screen-box">${mark}</span><span>${esc}</span></li>`;
+        }).join("");
+        elScreenNote.classList.toggle("hidden", !card.note);
+        if (card.note) elScreenNote.textContent = card.note;
+        btnClearCard.classList.remove("hidden");
+        elDeskHintRight.classList.add("hidden");
+      } else {
+        elDeskLed.classList.toggle("locked", live.sheetFound && !live.busy);
+        elDeskStatus.textContent = live.busy
+          ? "DESK // ANALYZING SHEET"
+          : live.sheetFound
+            ? "DESK // SHEET LOCKED"
+            : "DESK // CAMERA ACTIVE";
+        elDeskOptics.textContent = `${live.zoom.toFixed(live.zoom % 1 ? 2 : 1)}× · ${live.width}×${live.height}`;
+        elDeskReply.classList.remove("hidden");
+        elDeskReply.textContent = live.reply || "Place your paper in front of the camera and ask away.";
+        elScreenList.classList.add("hidden");
+        elScreenNote.classList.add("hidden");
+        btnClearCard.classList.add("hidden");
+        elDeskHintRight.classList.remove("hidden");
+      }
       elDeskScanBar.classList.toggle("hidden", !live.busy);
       elDeskHiLight.textContent = `HILIGHT // ${live.hilightEffect.toUpperCase()}`;
     }
@@ -439,14 +480,37 @@
   });
 
   document.addEventListener("pointerdown", (e) => {
-    if (e.target.closest("#demo-dock") || e.target.closest("#btn-demo-toggle")) return;
+    if (e.target.closest("#demo-dock") || e.target.closest("#btn-demo-toggle") || e.target.closest(".screen-item") || e.target.closest("#btn-clear-card")) return;
     requestWakeLock();
     touchStartY = e.clientY;
     touchStartT = performance.now();
   });
 
+  // Interactive tap-to-check on Pixel OLED checklist items!
+  elScreenList.addEventListener("click", (e) => {
+    const li = e.target.closest(".screen-item");
+    if (!li) return;
+    const idx = Number(li.dataset.idx);
+    if (Number.isNaN(idx)) return;
+    haptic(14);
+    if (demoMode && live.screenCard && live.screenCard.items[idx]) {
+      live.screenCard.items[idx].done = !live.screenCard.items[idx].done;
+      syncDomLayers();
+    } else {
+      sendWs({ action: "toggle_screen_item", index: idx });
+    }
+  });
+
+  btnClearCard.addEventListener("click", () => {
+    haptic(12);
+    live.screenCard = { mode: "none", title: "", items: [], note: "" };
+    if (!demoMode) sendWs({ action: "clear_screen_card" });
+    live.mode = live.deskMode ? "desk" : "dialogue";
+    syncDomLayers();
+  });
+
   document.addEventListener("pointerup", (e) => {
-    if (e.target.closest("#demo-dock") || e.target.closest("#btn-demo-toggle")) return;
+    if (e.target.closest("#demo-dock") || e.target.closest("#btn-demo-toggle") || e.target.closest(".screen-item") || e.target.closest("#btn-clear-card")) return;
     const dy = e.clientY - touchStartY;
     const dt = performance.now() - touchStartT;
 
@@ -548,13 +612,30 @@
       live.mood = "idle";
       live.stateLabel = "QUIET";
       live.reply = "";
+      live.screenCard = { mode: "none", title: "", items: [], note: "" };
+    } else if (preset === "checklist") {
+      live.mode = "desk";
+      live.mood = "desk_locked";
+      live.stateLabel = "CHECKLIST";
+      live.screenCard = {
+        mode: "checklist",
+        title: "THERMO REVISION // QMAX",
+        items: [
+          { text: "Draw heat flux arrow: skin → fabric → air", done: true },
+          { text: "Compare Qmax: Cotton vs ICENYL (0.18 W/cm²)", done: false },
+          { text: "Explain instant touch vs sustained cooling", done: false }
+        ],
+        note: "Qmax = peak conductive heat flux at first contact"
+      };
     } else if (preset === "desk") {
       live.mode = "desk";
       live.mood = "desk_locked";
       live.stateLabel = "SHEET LOCKED";
-      live.reply = "« What catch your attention? » → « What catches your attention? » · « become biger » → « gets bigger ».";
+      live.screenCard = { mode: "none", title: "", items: [], note: "" };
+      live.reply = "The red arrows show conductive heat moving from your skin through the fabric to the air.";
     } else {
       live.mode = "dialogue";
+      live.screenCard = { mode: "none", title: "", items: [], note: "" };
       live.mood = preset;
       const labels = {
         listen: "LISTENING",

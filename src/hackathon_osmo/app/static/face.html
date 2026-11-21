@@ -62,7 +62,9 @@
       <div class="desk-divider"></div>
 
       <div class="desk-body">
-        <p id="desk-reply" class="desk-reply">En attente d'analyse de la feuille…</p>
+        <p id="desk-reply" class="desk-reply">Waiting for document analysis…</p>
+        <ul id="screen-list" class="screen-list hidden"></ul>
+        <div id="screen-note" class="screen-note hidden"></div>
       </div>
 
       <div class="desk-footer">
@@ -71,7 +73,8 @@
         </div>
         <div class="desk-meta-row">
           <span id="desk-hilight-label">HILIGHT // RING-LIGHT</span>
-          <span>DOUBLE-TAP : FACE</span>
+          <button id="btn-clear-card" class="btn-clear-card hidden">CLEAR ×</button>
+          <span id="desk-hint-right">DOUBLE-TAP : FACE</span>
         </div>
       </div>
     </div>
@@ -100,6 +103,7 @@
     <button data-demo="curious">CURIOUS</button>
     <button data-demo="search">SCAN</button>
     <button data-demo="desk">DESK</button>
+    <button data-demo="checklist">TO-DO</button>
     <button id="btn-fs">FULL</button>
   </aside>
 

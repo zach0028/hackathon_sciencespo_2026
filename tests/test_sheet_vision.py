@@ -10,9 +10,11 @@ import numpy as np
 from hackathon_osmo.ai.live_brain import prepare_vision_jpeg
 from hackathon_osmo.hardware.pixel_camera import PixelCameraStream
 from hackathon_osmo.vision.sheet import (
+    PointingTarget,
     SheetDetection,
     _roi_paper_metrics,
     compute_sharpness,
+    crop_pointing_macro,
     prepare_desk_reading_image,
     rotate_image,
     slice_desk_spread_tiles,
@@ -130,5 +132,15 @@ def test_slice_desk_spread_tiles_produces_overlapping_left_and_right_pages() -> 
     # Both tiles should be crisp high-res upright regions
     for _lbl, img in tiles:
         assert img.shape[0] >= 600 and img.shape[1] >= 400
+
+
+def test_crop_pointing_macro_extracts_crisp_region_around_fingertip() -> None:
+    page = _make_synthetic_page(1512, 2688)
+    ptr = PointingTarget(found=True, tip_x=0.21, tip_y=0.35, target_x=0.24, target_y=0.29, confidence=0.85)
+    patch = crop_pointing_macro(page, ptr, box_frac=0.42, enhance=True)
+    assert patch is not None
+    assert patch.shape[1] >= 500 and patch.shape[0] >= 900
+    assert crop_pointing_macro(page, PointingTarget(found=False)) is None
+
 
 

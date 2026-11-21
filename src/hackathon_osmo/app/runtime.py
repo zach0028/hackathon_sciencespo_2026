@@ -33,9 +33,12 @@ from hackathon_osmo.telemetry.recorder import SessionRecorder
 from hackathon_osmo.vision.face import AppleVisionFaceDetector, FaceBox
 from hackathon_osmo.vision.sheet import (
     AppleVisionSheetDetector,
+    PointingTarget,
     SheetDetection,
     compute_sharpness,
+    crop_pointing_macro,
     prepare_desk_reading_image,
+    rotate_image,
     slice_desk_spread_tiles,
 )
 
@@ -77,7 +80,16 @@ class StudioRuntime:
         self.detector = AppleVisionFaceDetector()
         self.sheet_detector = AppleVisionSheetDetector()
         self._latest_sheet: SheetDetection = SheetDetection()
+        self._latest_pointer: PointingTarget = PointingTarget()
         self._last_sheet_det_t: float = 0.0
+        self._last_orient_toggle_t: float = 0.0
+        self.screen_card: dict[str, Any] = {
+            "mode": "none",
+            "title": "",
+            "items": [],
+            "note": "",
+            "updated_at": 0.0,
+        }
         self.hilight = PixelHiLight()
         self.arbiter = MotionArbiter()
         self.arbiter.on_request_recenter = self.recenter_landscape
@@ -86,6 +98,7 @@ class StudioRuntime:
         self.brain = OpenAILiveBrain(
             on_execute_tool=self.execute_robot_tool,
             on_get_frame=self._get_latest_frame_jpeg,
+            on_get_pointer_macro=self._get_pointer_macro_sync,
             on_get_context=self._get_robot_context,
             on_log=self.arbiter.log,
             on_light=self._trigger_light_reaction,
@@ -159,10 +172,11 @@ class StudioRuntime:
             return
         self._hw_busy_until = time.monotonic() + 2.6
         is_land = self._osmo.is_landscape()
-        if is_land is False:
+        if is_land is False and (time.monotonic() - self._last_orient_toggle_t) > 3.5:
+            self._last_orient_toggle_t = time.monotonic()
             self.arbiter.log("OSMO", "Nacelle en portrait détectée → bascule automatique en Paysage")
             await self._osmo.send_toggle_orientation()
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(1.3)
         self.arbiter.log("OSMO", "Recentrage matériel en format Paysage (CmdId 0x4C)")
         await self._osmo.send_recenter()
         self.rotate_deg = self.arbiter.config.cal_rotate_deg
@@ -222,6 +236,33 @@ class StudioRuntime:
             )
         ok, enc = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
         return enc.tobytes() if ok else None
+
+    def _get_pointer_macro_sync(self) -> tuple[bytes | None, str]:
+        """Detect a pointing index finger on the upright desk document (~11 ms ANE) and return a macro crop."""
+        raw = self._latest_raw_bgr
+        if raw is None or not self.arbiter.desk_mode:
+            return None, ""
+        ocr_rot = int(self.desk_pose.get("ocr_rotate_deg", 270))
+        upright = rotate_image(raw, ocr_rot) if ocr_rot % 360 != 0 else raw
+        ptr = self.sheet_detector.detect_pointing_finger(upright, min_conf=0.55)
+        self._latest_pointer = ptr
+        if not ptr.found:
+            return None, ""
+        patch = crop_pointing_macro(upright, ptr, box_frac=0.42, enhance=True)
+        if patch is None:
+            return None, ""
+        ph, pw = patch.shape[:2]
+        sc = min(1.0, 1024.0 / max(1, max(ph, pw)))
+        if sc < 0.99:
+            patch = cv2.resize(patch, (max(1, int(pw * sc)), max(1, int(ph * sc))), interpolation=cv2.INTER_AREA)
+        ok, enc = cv2.imencode(".jpg", patch, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+        if not ok:
+            return None, ""
+        self.arbiter.log(
+            "VISION",
+            f"Doigt pointeur détecté ({ptr.tip_x:.2f},{ptr.tip_y:.2f} conf={ptr.confidence:.2f}, {ptr.vision_ms:.0f}ms) → macro-crop envoyé",
+        )
+        return enc.tobytes(), f"MACRO ZOOM AROUND POINTING FINGER (tip={ptr.tip_x:.2f},{ptr.tip_y:.2f})"
 
     async def _wait_sharp_frame(
         self,
@@ -1166,6 +1207,33 @@ class StudioRuntime:
                 return {"ok": True, "deleted": n}
             return {"ok": False, "error": f"Action mémoire inconnue: {act}"}
 
+        # --- 7. show_on_screen (interactive Pixel OLED checklist / concept card) ---
+        if name == "show_on_screen":
+            mode = str(args.get("mode", "clear"))
+            if mode == "clear":
+                self.screen_card = {"mode": "none", "title": "", "items": [], "note": "", "updated_at": time.time()}
+                self.arbiter.log("SCREEN", "Écran Pixel OLED remis en mode normal")
+                return {"ok": True, "mode": "clear"}
+            title = str(args.get("title") or "OSMO // NOTES").strip()[:60]
+            raw_items = args.get("items") or []
+            items = [
+                {"text": str(it).strip()[:120], "done": False}
+                for it in raw_items[:5]
+                if str(it).strip()
+            ]
+            note = str(args.get("note") or "").strip()[:160]
+            self.screen_card = {
+                "mode": mode if mode in ("checklist", "concept") else "checklist",
+                "title": title,
+                "items": items,
+                "note": note,
+                "updated_at": time.time(),
+            }
+            self.arbiter.log("SCREEN", f"Carte Pixel OLED [{self.screen_card['mode']}] : {title} ({len(items)} items)")
+            if self.hilight.connected:
+                self.hilight.start_reaction("yes")
+            return {"ok": True, "mode": self.screen_card["mode"], "title": title, "items_count": len(items)}
+
         return {"ok": False, "error": f"Outil inconnu: {name}"}
 
     async def create_live_session(self, sdp_offer: str) -> dict[str, str]:
@@ -1410,10 +1478,9 @@ class StudioRuntime:
     async def _hilight_loop(self) -> None:
         while self._running:
             if not self.hilight.connected:
-                serial = self.pixel_serial
-                if not serial:
-                    devs = [d for d in list_adb_devices() if d.state == "device"]
-                    serial = devs[0].serial if devs else None
+                devs = [d for d in list_adb_devices() if d.state == "device"]
+                online_serials = [d.serial for d in devs]
+                serial = self.pixel_serial if (self.pixel_serial in online_serials) else (online_serials[0] if online_serials else None)
                 if serial:
                     try:
                         ok = await self.hilight.connect(serial)
@@ -1645,6 +1712,7 @@ class StudioRuntime:
                 "lost_policy": cfg.lost_policy,
             },
             "gestures": [{"id": k, "label": v[0]} for k, v in GESTURES.items()],
+            "screen": self.screen_card,
             "memory": {
                 "stats": self.memory.stats(),
                 "items": self.memory.list_memories(limit=12),
