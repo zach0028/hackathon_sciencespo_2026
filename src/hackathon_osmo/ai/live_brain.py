@@ -688,6 +688,8 @@ class OpenAILiveBrain:
         self.speaking = False
         self.session_id = None
 
+        if self._active_delegations:
+            self._previous_response_id = None
         for t in list(self._active_delegations):
             t.cancel()
         self._active_delegations.clear()
