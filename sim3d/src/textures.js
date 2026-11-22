@@ -190,6 +190,171 @@ export function createBrushedMetalTexture() {
 }
 
 /**
+ * Radial CNC Lathe-Turned Motor Endcap Texture (color + bump) for DJI OM3 brushless drums.
+ */
+export function createRadialMotorCapTexture() {
+  const size = 512;
+  const cx = size / 2;
+  const cy = size / 2;
+
+  const colCanvas = document.createElement('canvas');
+  colCanvas.width = size;
+  colCanvas.height = size;
+  const ctx = colCanvas.getContext('2d');
+
+  const bumpCanvas = document.createElement('canvas');
+  bumpCanvas.width = size;
+  bumpCanvas.height = size;
+  const bctx = bumpCanvas.getContext('2d');
+
+  // Anisotropic radial shimmer background
+  ctx.fillStyle = '#3f4550';
+  ctx.fillRect(0, 0, size, size);
+  bctx.fillStyle = '#808080';
+  bctx.fillRect(0, 0, size, size);
+
+  // Anisotropic metallic sweep wedge highlights
+  for (let a = 0; a < 360; a += 1) {
+    const rad = (a * Math.PI) / 180;
+    const sheen = Math.pow(Math.abs(Math.sin(rad * 2 + 0.7)), 1.6);
+    const v = Math.round(52 + sheen * 42);
+    ctx.strokeStyle = `rgb(${v},${v + 4},${v + 10})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(rad) * 256, cy + Math.sin(rad) * 256);
+    ctx.stroke();
+  }
+
+  // Fine concentric CNC lathe grooves
+  for (let r = 10; r < 246; r += 3) {
+    const wave = Math.sin(r * 0.9) * 0.5 + 0.5;
+    ctx.strokeStyle = wave > 0.5 ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.12)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    const bv = Math.round(108 + wave * 42);
+    bctx.strokeStyle = `rgb(${bv},${bv},${bv})`;
+    bctx.lineWidth = 1.5;
+    bctx.beginPath();
+    bctx.arc(cx, cy, r, 0, Math.PI * 2);
+    bctx.stroke();
+  }
+
+  // Outer engraved mechanical index ring + subtle degree ticks
+  ctx.strokeStyle = 'rgba(215, 224, 238, 0.24)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 198, 0, Math.PI * 2);
+  ctx.stroke();
+
+  for (let i = 0; i < 24; i++) {
+    const rad = (i / 24) * Math.PI * 2;
+    const inner = i % 6 === 0 ? 174 : 186;
+    ctx.strokeStyle = i % 6 === 0 ? 'rgba(225, 232, 244, 0.42)' : 'rgba(200, 210, 225, 0.2)';
+    ctx.lineWidth = i % 6 === 0 ? 2.5 : 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(rad) * inner, cy + Math.sin(rad) * inner);
+    ctx.lineTo(cx + Math.cos(rad) * 198, cy + Math.sin(rad) * 198);
+    ctx.stroke();
+  }
+
+  // Inner dark recessed rotor center cap
+  ctx.fillStyle = '#252931';
+  ctx.beginPath();
+  ctx.arc(cx, cy, 78, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(220, 228, 240, 0.35)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  const map = new THREE.CanvasTexture(colCanvas);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.anisotropy = 8;
+
+  const bumpMap = new THREE.CanvasTexture(bumpCanvas);
+  bumpMap.anisotropy = 8;
+
+  return { map, bumpMap };
+}
+
+/**
+ * Tactile Micro-Diamond Rubber Grip Bump Texture for DJI OM3 palm grip & clamp pads.
+ */
+export function createRubberGripTexture() {
+  const size = 256;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#555555';
+  ctx.fillRect(0, 0, size, size);
+
+  const step = 12;
+  for (let y = 0; y < size; y += step) {
+    for (let x = 0; x < size; x += step) {
+      const off = (Math.floor(y / step) % 2) * (step / 2);
+      const px = (x + off) % size;
+      ctx.fillStyle = '#b8b8b8';
+      ctx.beginPath();
+      ctx.moveTo(px, y + 1);
+      ctx.lineTo(px + step * 0.42, y + step * 0.5);
+      ctx.lineTo(px, y + step - 1);
+      ctx.lineTo(px - step * 0.42, y + step * 0.5);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(5, 8);
+  return tex;
+}
+
+/**
+ * Photorealistic Dual-Tone Fresnel Smartphone LED Flash Texture for Pixel 11 Pro visor.
+ */
+export function createFlashFresnelTexture() {
+  const size = 256;
+  const cx = size / 2;
+  const cy = size / 2;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const ctx = c.getContext('2d');
+
+  // Dual-tone phosphor split (warm amber upper + crisp cool white lower)
+  const g = ctx.createLinearGradient(0, 0, 0, size);
+  g.addColorStop(0.0, '#ffe39a');
+  g.addColorStop(0.48, '#ffefb8');
+  g.addColorStop(0.52, '#fffdf5');
+  g.addColorStop(1.0, '#eef4ff');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+
+  // Concentric micro-Fresnel lens rings
+  for (let r = 10; r < 126; r += 9) {
+    ctx.strokeStyle = 'rgba(130, 108, 72, 0.34)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  // Subtle metallic outer rim shadow
+  const rg = ctx.createRadialGradient(cx, cy, 70, cx, cy, 128);
+  rg.addColorStop(0, 'rgba(0,0,0,0)');
+  rg.addColorStop(1, 'rgba(30,26,20,0.45)');
+  ctx.fillStyle = rg;
+  ctx.fillRect(0, 0, size, size);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/**
  * Photorealistic MacBook Pro Backlit Keyboard Deck Texture (keys + speaker grilles + Touch ID).
  */
 export function createMacBookKeyboardTexture() {

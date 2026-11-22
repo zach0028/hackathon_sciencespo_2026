@@ -95,7 +95,7 @@ const CAM_PRESETS = {
 let camLerp = null;
 
 function goToCamera(key) {
-  const p = CAM_PRESETS[key];
+  const p = key === 'rear' ? rig.getOpticsCameraPose() : CAM_PRESETS[key];
   if (!p) return;
   camLerp = {
     t: 0,
