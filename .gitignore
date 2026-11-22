@@ -14,4 +14,7 @@ build/
 .env.*
 logs/
 data/
+sim3d/node_modules/
+src/hackathon_osmo/app/static/sim_dist/
+
 

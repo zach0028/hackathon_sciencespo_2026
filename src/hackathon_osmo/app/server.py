@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 import uvicorn
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -59,6 +59,15 @@ async def _no_cache_ui_middleware(request: Request, call_next: Any) -> Response:
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+SIM_DIST_DIR = STATIC_DIR / "sim_dist"
+if SIM_DIST_DIR.exists():
+    app.mount("/sim", StaticFiles(directory=str(SIM_DIST_DIR), html=True), name="sim3d")
+
+
+@app.get("/sim")
+async def sim_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/sim/")
 
 
 @app.get("/", response_class=HTMLResponse)

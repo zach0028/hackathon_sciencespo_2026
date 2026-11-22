@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OSMO // ELEGNT 3D Digital Twin</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="viewport"></div>
+
+  <button id="btn-unhide" class="floating-unhide" title="Réafficher le HUD (H)">AFFICHER HUD (H)</button>
+
+  <div id="hud" class="hud">
+    <!-- TOP HEADER BAR -->
+    <div class="topbar">
+      <div class="pill-bar">
+        <div class="brand">
+          <span class="dot"></span>
+          <span>OSMO // ELEGNT 3D</span>
+          <span class="sub">DJI OM3 + PIXEL 11 PRO + HILIGHT</span>
+        </div>
+      </div>
+
+      <div class="pill-bar">
+        <button id="cam-hero" class="mini active" data-cam="hero">1 · HERO</button>
+        <button id="cam-lamp" class="mini" data-cam="lamp">2 · LAMPE</button>
+        <button id="cam-pov" class="mini" data-cam="pov">3 · POV ÉLÈVE</button>
+        <button id="cam-rear" class="mini" data-cam="rear">4 · OPTIQUES 8-LED</button>
+        <button id="cam-top" class="mini" data-cam="top">5 · TOP</button>
+      </div>
+
+      <div class="pill-bar">
+        <button id="mood-night" class="mini warm-on" data-mood="night">NUIT</button>
+        <button id="mood-golden" class="mini" data-mood="golden">SOIRÉE</button>
+        <button id="mood-day" class="mini" data-mood="day">JOUR</button>
+        <button id="btn-sound" class="mini active">SON : ON</button>
+        <button id="btn-bridge" class="mini" title="Synchroniser le jumeau 3D avec le serveur local osmo-app (/ws)">SYNC LIVE : OFF</button>
+        <button id="btn-hide" class="mini" title="Masquer le HUD pour capture plein écran (H)">HUD (H)</button>
+      </div>
+    </div>
+
+    <!-- LEFT & RIGHT FLOATING PROTOTYPING PANELS -->
+    <div class="middle-dock">
+      <!-- LEFT PANEL: ELEGNT MOVEMENTS & HILIGHT DESK LAMP -->
+      <aside class="panel">
+        <div>
+          <div class="sec-title">
+            <span>COMPARATEUR APPLE ELEGNT</span>
+            <span id="lbl-style-badge">EXPRESSIF</span>
+          </div>
+          <div class="seg">
+            <button id="btn-style-elegnt" class="active">ELEGNT EXPRESSIF</button>
+            <button id="btn-style-robotic">ROBOTIQUE PUR</button>
+          </div>
+        </div>
+
+        <div>
+          <div class="sec-title"><span>CURSEUR D'EXPRESSIVITÉ</span></div>
+          <div class="seg three">
+            <button id="btn-exp-focus" data-exp="focus">FOCUS</button>
+            <button id="btn-exp-companion" class="active" data-exp="companion">COMPANION</button>
+            <button id="btn-exp-playful" data-exp="playful">PLAYFUL</button>
+          </div>
+        </div>
+
+        <div>
+          <div class="sec-title">
+            <span>LAMPE DE BUREAU HILIGHT (8 LEDs)</span>
+            <button id="btn-follow-hands" class="mini emerald-on">SUIVI MAIN : ON</button>
+          </div>
+          <div class="action-stack">
+            <button id="btn-lamp-warm" data-lamp="warm">☀ WARM 2900K</button>
+            <button id="btn-lamp-study" data-lamp="study">✦ STUDY MAX</button>
+            <button id="btn-lamp-cozy" data-lamp="cozy">◐ COZY AMBER</button>
+            <button id="btn-lamp-sunset" data-lamp="sunset">◑ SUNSET FADE</button>
+            <button id="btn-lamp-off" class="wide" data-lamp="off">ÉTEINDRE LAMPE → FACE ZACH</button>
+          </div>
+        </div>
+
+        <div>
+          <div class="sec-title"><span>SCÉNARIOS ELEGNT COMPLETS</span></div>
+          <div class="action-stack">
+            <button id="btn-sc-showtell" class="wide active">▶ SHOW &amp; TELL COMPLET (4K → OLED → RETOUR)</button>
+            <button id="btn-sc-triadic">◈ REGARD TRIADIQUE</button>
+            <button id="btn-sc-nudge">◔ NUDGE SILENCIEUX</button>
+            <button id="btn-sc-social">◎ MULTI-VISAGES</button>
+            <button id="btn-sc-music">♪ MUSIQUE (BEAT PAN)</button>
+          </div>
+        </div>
+
+        <div>
+          <div class="sec-title"><span>MICRO-EXPRESSIONS &amp; FAUSSE PROXÉMIQUE</span></div>
+          <div class="action-stack">
+            <button data-react="nod_yes">NOD YES DOUX</button>
+            <button data-react="curious">CURIOUS TILT</button>
+            <button data-react="doubt">DOUTE / FIX</button>
+            <button data-react="celebrate">★ CÉLÉBRATION</button>
+            <button data-react="lean_in">SE PENCHER (+15%)</button>
+            <button data-react="recoil">BARGE-IN RECUL</button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- RIGHT PANEL: OLED BOARDS + KINEMATICS + OM3 TORQUE TELEMETRY -->
+      <aside class="panel">
+        <div>
+          <div class="sec-title"><span>CARTES OLED PIXEL 11 PRO (LIVE)</span></div>
+          <div class="action-stack">
+            <button data-board="definition">DEF · QMAX</button>
+            <button data-board="exercise">EXO · FCF</button>
+            <button data-board="exam">MINI-EXAM</button>
+            <button data-board="feedback">FEEDBACK OK/FIX</button>
+            <button data-board="checklist">CHECKLIST</button>
+            <button data-board="none" class="active">VISAGE 3D SEUL</button>
+          </div>
+        </div>
+
+        <div>
+          <div class="sec-title"><span>CINÉMATIQUE DJI OM3 (TEMPS RÉEL)</span></div>
+          <div class="telemetry-grid">
+            <div class="metric"><div class="k">PAN</div><div class="v" id="t-pan">0.0°</div></div>
+            <div class="metric"><div class="k">PITCH</div><div class="v" id="t-pitch">+6.0°</div></div>
+            <div class="metric"><div class="k">ROLL</div><div class="v" id="t-roll">0.0°</div></div>
+            <div class="metric"><div class="k">VEL PAN</div><div class="v" id="t-vpan">0°/s</div></div>
+            <div class="metric"><div class="k">VEL PITCH</div><div class="v" id="t-vpitch">0°/s</div></div>
+            <div class="metric"><div class="k">FPS</div><div class="v" id="t-fps">60</div></div>
+          </div>
+        </div>
+
+        <div class="torque-wrap">
+          <div class="torque-head">
+            <span>CHARGE COUPLE PITCH OM3</span>
+            <span id="t-torque">16% · SAFE</span>
+          </div>
+          <div class="torque-bar"><div id="t-torque-fill" class="torque-fill"></div></div>
+        </div>
+
+        <div class="hint-box">
+          <b>Interactions directes 3D :</b><br />
+          • <b>Glisse le cahier</b> sur le bureau → la lampe HiLight suit automatiquement !<br />
+          • <b>Clique sur une page</b> → place ton doigt pointeur (Macro + faisceau).<br />
+          • <b>Glisse les sphères Zach / Invité</b> → Osmo te suit du regard.<br />
+          • <b>Touches 1–5</b> : angles caméra · <b>H</b> : masquer HUD.
+        </div>
+      </aside>
+    </div>
+
+    <!-- BOTTOM TELEMETRY LOG STRIP -->
+    <div class="log-strip">
+      <span id="lbl-log">Prêt — clique sur WARM 2900K ou SHOW &amp; TELL, puis déplace le cahier à la souris !</span>
+      <span class="kbd">ORBIT : CLIC-GLISSER · ZOOM : MOLETTE · RESET DOIGT : DOUBLE-CLIC BUREAU</span>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
