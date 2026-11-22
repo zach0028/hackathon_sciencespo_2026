@@ -1,14 +1,16 @@
 # Osmo — Embodied AI Desk Tutor
 
-**Osmo** is a real-time embodied AI private tutor built for the **Sciences Po 2026 Hackathon**. It turns a motorized **DJI Osmo Mobile 3** gimbal, a **Google Pixel 11 Pro** (multi-lens rear camera, OLED whiteboard screen, and 8-LED RGB HiLight ring), and an **Apple Silicon Mac** into an attentive, low-latency desktop companion that reads handwritten notebooks, tracks where you point your finger, displays interactive exercises and definitions on its OLED screen, and speaks in calm, pedagogical English.
+**Osmo** is a real-time embodied AI private tutor built for the **Sciences Po 2026 Hackathon**. It turns a motorized **DJI Osmo Mobile 3** gimbal, a **Google Pixel 11 Pro** (multi-lens 4K camera, native OLED whiteboard app, and 8-LED RGB HiLight ring), and an **Apple Silicon Mac** into an attentive, low-latency desktop companion that reads handwritten notebooks, tracks where you point your finger, displays interactive exercises and definitions on its OLED screen, and teaches in **Full English or Full French** via a 1-click toggle.
 
 ---
 
 ## Highlights
 
-- **Full-Duplex Voice + Vision Brain** — OpenAI `gpt-live-1.1` over WebRTC (UDP/Opus with instant barge-in) paired via sideband WebSocket to a delegated multimodal brain (`gpt-6.2-sol` / `gpt-6.2-astra`) with 7 native hardware, vision, whiteboard, and memory tools.
-- **Zero-Latency SSE Speculative Pre-Warm** — Parses OpenAI `/v1/responses` Server-Sent Events in real time: as soon as a tool intent (`look_at_desk`, `look_at_user`, or `show_on_screen` with `face_user=true` as its first JSON key) streams in (~50 ms), Osmo starts pivoting the gimbal and switching optics **in parallel** with LLM generation, eliminating 1.5–5 s of perceived latency per turn.
-- **4K Handwritten Sheet Reading & 11 ms Finger-Pointing Macro** — Apple Neural Engine (`VNDetectDocumentSegmentationRequest` + bright-paper luminance filtering) locks onto notebooks while ignoring dark laptops, rotates upright, gates autofocus sharpness via Laplacian variance, splits open 2-page spreads into 4K HD tiles, and automatically attaches a macro close-up around Zach's fingertip via `VNDetectHumanHandPoseRequest` (~11 ms ANE).
+- **Dual-Provider Real-Time Voice & Vision Engine (`AI : GEMINI` ↔ `AI : OPENAI`)** — Switch providers in 1 click from the Studio header:
+  - **Google Gemini (Default)** — **Gemini 3.8 Live** (`gemini-3.8-live`) full-duplex WebSocket audio (16 kHz PCM in / 24 kHz PCM out via AEC-coupled `<audio>`, instant barge-in flush, context window compression, and transparent **Session Resumption** across `goAway` rollovers) with **direct asynchronous `NON_BLOCKING` hardware tools** (`SILENT` for gestures/memory, `WHEN_IDLE` for vision/whiteboards) + **Gemini 4 Hydrogen** (`gemini-4-hydrogen`, 2× faster 4K OCR) / **Gemini 4 Neon / Argon / Carbon** for razor-sharp 4K sheet reading and text prompts.
+  - **OpenAI (1-Click Fallback)** — `gpt-live-1.1` over WebRTC (UDP/Opus with instant barge-in) paired via sideband WebSocket to a delegated multimodal brain (`gpt-6.2-sol` / `gpt-6.2-astra`) with **SSE Speculative Pre-Warm** (~50 ms).
+- **1-Click Full Bilingual Mode (`LANG : EN` ↔ `LANG : FR`)** — Switches voice instructions, 4K reasoning brain, OLED study cards, and bilingual micro-expressions cleanly across both providers.
+- **4K Handwritten Sheet Reading & 11 ms Finger-Pointing Macro** — Apple Neural Engine (`VNDetectDocumentSegmentationRequest` + bright-paper luminance filtering) locks onto notebooks while ignoring dark laptops, rotates upright, gates autofocus sharpness via Laplacian variance, splits open 2-page spreads into 4K HD tiles, and automatically attaches a macro close-up around the student's fingertip via `VNDetectHumanHandPoseRequest` (~11 ms ANE).
 - **Native Android OLED Companion (`Osmo Face`, 16 KB APK)** — Locked-landscape, edge-to-edge immersive fullscreen WebView kiosk app (`com.osmo.face`) displaying a 120 Hz analytical 3D CAD superellipsoid face coupled to live gimbal IMU & motor velocity, plus **6 proactive study whiteboards**:
   - `DEFINITION` (hero definition + formula / example / common trap)
   - `CONCEPT` (smart label pills for timelines, derivations, comparisons, essay outlines, vocab)
@@ -17,7 +19,9 @@
   - `CHECKLIST` (finger-tappable to-do list with live progress bar & celebratory HiLight pulse)
   - `FEEDBACK` (structured `✓ OK` / `△ FIX` / `→ NEXT` grading after inspecting written work)
 - **Automatic Desk ↔ Face "Show & Tell" Loop** — Osmo proactively puts dense definitions, formulas, and exercises on its OLED screen, swings toward you to let you copy/solve, and tracks `came_from_desk=True` so a simple *"Got it, I noted it"* swings it right back to your worksheet in one hop (`read_now=false`, 0 Round-2 delay).
-- **Organic Physical Micro-Expressions & Local Memory** — Real-time `< 0.1 ms` micro-expression engine triggers synchronized DJI OM3 nods/shakes/curious tilts, 8-LED RGB HiLight animations, and 3D CAD eye expressions as Osmo speaks — backed by a local SQLite + FTS5 persistent memory (`< 1 ms` recall) and a full Flight Recorder (`turns.jsonl`, `events.jsonl`, `imu_trace.jsonl`, captured frames).
+- **Organic Micro-Expressions, Local Memory & Hardware Resilience (`MotorWatchdog`)**:
+  - Real-time `< 0.1 ms` micro-expression engine triggers synchronized DJI OM3 nods/shakes/curious tilts (with 2.5 s anti-double-trigger cooldown), 8-LED RGB HiLight animations, and 3D CAD eye expressions — backed by SQLite + FTS5 persistent memory (`< 1 ms` recall) and a full Flight Recorder (`turns.jsonl`, `events.jsonl`, `imu_trace.jsonl`, captured frames).
+  - **Anti-Sleep & Auto-Heal**: DUML `CmdSet=0x04 CmdId=0x0D` (`0x2AB5` Resume) + dual-tier BLE keepalive (`6 s` speed / `45 s` resume), 1-click `WAKE MOTORS`, IMU-based mechanical end-stop stall relief, silent CoreBluetooth freeze reconnect (`> 4.5 s`), Wireless ADB Hotspot auto-reconnect, `scrcpy` Camera2 HAL zombie cleanup, and 4K → 2.7K automatic encoder fallback.
 
 ---
 
@@ -30,30 +34,34 @@
 │                                   │ ◄── adb reverse :8765/face ──── │                                               │
 │  • Native App: Osmo Face (16 KB)  │     (WS 120Hz CAD + 6 boards)   │  1. Vision   Apple Vision ANE (Face, Sheet,   │
 │    Locked Landscape OLED Kiosk    │                                 │              Hand-Pose Finger Macro ~11 ms)   │
-│  • Optics: Front 720p / Rear 4K   │ ◄── stdin -> hilight.jar ────── │  2. Control  One-Euro + PID + Gestures + FSM  │
+│  • Optics: Front 720p / Rear 4K   │ ◄── stdin -> hilight.jar ────── │  2. Control  One-Euro + PID + MotorWatchdog   │
 │    (0.51x .. 5x optical zoom)     │     (LightsManager, 30 fps)     │              Quaternion Closed-Loop Pivots    │
-│  • 8-LED RGB HiLight Ring         │                                 │  3. Brain    GPT-Live 1.1 (WebRTC+Sideband) + │
-└─────────────────▲─────────────────┘                                 │              GPT-6.2 Sol/Astra (SSE Pre-Warm) │
-                  │ physically moves                                  │  4. Memory   SQLite + FTS5 + Flight Recorder  │
-┌─────────────────┴─────────────────┐       BLE GATT (fff4/fff5)      │  5. Studio   FastAPI Dashboard (:8765)        │
-│        DJI Osmo Mobile 3          │ ◄── DUML v1 (21 B, CRC-8/16) ───┴───────────────────────┬───────────────────────┘
-│           (OM3-4008VF)            │ ─── Live IMU Quaternions ───────────────────────────────┘
+│  • 8-LED RGB HiLight Ring         │                                 │  3. AI Dual  [GEMINI] 3.8 Live (NON_BLOCKING) │
+└─────────────────▲─────────────────┘                                 │                      + 4 Hydrogen / Neon 4K   │
+                  │ physically moves                                  │              [OPENAI] GPT-Live 1.1 + 6.2 Sol  │
+┌─────────────────┴─────────────────┐       BLE GATT (fff4/fff5)      │  4. Memory   SQLite + FTS5 + Flight Recorder  │
+│        DJI Osmo Mobile 3          │ ◄── DUML v1 (0x0C/0x0D/0x4C) ───┴───────────────────────┬───────────────────────┘
+│         (Bluetooth LE)            │ ─── Live IMU Quaternions (0x05) ────────────────────────┘
 └───────────────────────────────────┘
 ```
 
-### Fast Show & Tell Choreography (SSE Pre-Warm)
+### Dual-Provider Voice & Tool Pipelines
 
 ```text
-  DESK READING (4K Rear Camera)
-       │  "Give me the definition of Qmax to write down"
-       ▼
-  t + 50ms   SSE streams `{"face_user":true` ──▶ [=== Parallel 125°/s Pan + Pitch Lift + Front Cam (~1.3s) ===]
-             (runs WHILE the brain finishes generating title, definition, formula & spoken_summary)
-  t + 2.7s   OLED screen is ALREADY facing the student ──▶ Definition card snaps on screen (0 Round-2 delay!)
-       │
-       │  Student copies cleanly, then says: "Okay good, got it!"
-       ▼
-  t + 50ms   `came_from_desk=True` + `read_now=false` ──▶ [=== Parallel Pivot back to sheet (~1.8s, 0 Round-2) ===]
+┌────────────────────────────────────────────────────────────────────────────┐
+│ GEMINI MODE (Default ⚡) — Direct NON_BLOCKING Live Tools + 4K Reader      │
+│                                                                            │
+│  Browser Mic (16 kHz PCM) ──► /ws/gemini_live ──► gemini-3.8-live          │
+│                                                    ├── 7 tools NON_BLOCKING│
+│                                                    │   (SILENT / WHEN_IDLE)│
+│                                                    └── 4K desk OCR ──►     │
+│                                                        gemini-4-hydrogen   │
+│  Browser Audio (24 kHz PCM + AEC + Barge-In) ◄── sessionResumption auto    │
+├────────────────────────────────────────────────────────────────────────────┤
+│ OPENAI MODE (1-Click Fallback) — WebRTC + SSE Speculative Pre-Warm (~50ms) │
+│                                                                            │
+│  Browser WebRTC ──► gpt-live-1.1 ──► Sideband ──► gpt-6.2-sol (SSE tools)  │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -75,29 +83,31 @@ hackathon_osmo/
 ├── src/hackathon_osmo/
 │   ├── paths.py                     # Centralized paths (.env, calibration.json, data/, logs/, static/)
 │   ├── hardware/
-│   │   ├── duml.py                  # DJI DUML v1 binary encoder/decoder (CRC-8 / CRC-16)
-│   │   ├── osmo_ble.py              # Bleak CoreBluetooth client (speed, recenter, IMU quaternion parser)
-│   │   ├── pixel_camera.py          # Wireless Pixel camera via scrcpy-server + PyAV (push-cached, gen-synced)
+│   │   ├── duml.py                  # DJI DUML v1 encoder/decoder (CRC-8/16, 0x0C speed, 0x0D resume/suspend, 0x4C)
+│   │   ├── osmo_ble.py              # Bleak CoreBluetooth client (IMU quaternions, wake sequence, freeze watchdog)
+│   │   ├── pixel_camera.py          # Wireless Pixel camera via scrcpy + PyAV (auto ADB reconnect, zombie cleanup)
 │   │   └── pixel_hilight.py         # 8-LED RGB animations & reactive ring-light controller
 │   ├── vision/
 │   │   ├── face.py                  # Apple Vision ANE face detection (VNDetectFaceRectanglesRequest)
 │   │   └── sheet.py                 # Document segmentation, bright-paper filter, 4K spread slicer, finger macro
 │   ├── control/
 │   │   ├── motion.py                # One-Euro filter, PID, rotation-invariant screen->motor, gestures, search FSM
+│   │   ├── watchdog.py              # MotorWatchdog (end-stop stall relief, anti-sleep keepalive, limp detection)
 │   │   └── calibrate.py             # Automatic 2x2 Jacobian camera-to-motor calibration (calibration.json)
 │   ├── ai/
-│   │   ├── live_brain.py            # GPT-Live 1.1 WebRTC + Sideband, SSE pre-warm, 7 strict tools, auto-expressions
+│   │   ├── gemini_brain.py          # Gemini 3.8 Live WS bridge (NON_BLOCKING + sessionResumption) + Gemini 4 4K brain
+│   │   ├── live_brain.py            # OpenAI GPT-Live 1.1 WebRTC + Sideband, SSE pre-warm, 7 strict tools
 │   │   └── memory.py                # Local SQLite + FTS5 persistent tutor memory & episode logger
 │   ├── telemetry/
 │   │   └── recorder.py              # Session Flight Recorder (turns, events, 10 Hz IMU trace, vision frames)
 │   ├── app/
-│   │   ├── runtime.py               # StudioRuntime (async vision, gimbal, HiLight, pre-warm & tool executor)
-│   │   ├── server.py                # FastAPI server (REST, /ws, /ws_video, /face, /api/pixel/launch_face)
+│   │   ├── runtime.py               # StudioRuntime (dual AI provider, vision, gimbal, HiLight, watchdog & tools)
+│   │   ├── server.py                # FastAPI server (REST, /ws, /ws_video, /ws/gemini_live, /face)
 │   │   └── static/                  # Mac Studio dashboard (index.html/studio.js/voice.js) + Pixel OLED (face.*)
 │   └── tools/
 │       ├── probe.py                 # OM3 BLE scanner & DUML sniffer
 │       └── sync_test.py             # Quick Pixel + Osmo synchronization test
-├── tests/                           # 48 unit tests (DUML, MotionArbiter, LiveBrain, Memory, SheetVision, Recorder)
+├── tests/                           # 56 unit tests (DUML, Motion, Watchdog, GeminiBrain, LiveBrain, Memory, Sheet)
 ├── calibration.json                 # Active landscape Jacobian + calibrated face/desk IMU poses
 └── pyproject.toml                   # Python 3.12 dependencies & CLI entry points (uv)
 ```
@@ -116,13 +126,14 @@ hackathon_osmo/
 - **Hardware**:
   - **DJI Osmo Mobile 3** (Bluetooth LE)
   - **Google Pixel** (tested on Pixel 11 Pro, Android 17) paired over **Wireless ADB** (`adb tcpip 5555 && adb connect <pixel-ip>:5555`).
-  > **Hardware tip:** Unplug the USB-C cable once Wireless ADB is active and balance the Pixel horizontally in the clamp with motors powered off — this prevents USB cable drag from tripping the OM3's motor overload protection.
+  > **Hardware balance tip:** The DJI Osmo Mobile 3 payload cap is `200 g ± 30 g`. Remove thick phone cases, unplug the USB-C cable once Wireless ADB is active, and slide the Pixel in the clamp (bringing the heavy rear camera bar closer to the clamp center) until it balances level with motors powered off. This prevents static motor overheating and hardware protection cutouts.
 
 ### Configuration
 
-Create a `.env` file at the repository root (gitignored):
+Create a `.env` file at the repository root (strictly gitignored). Set either or both keys — Osmo defaults to **Gemini** when `GEMINI_API_KEY` is present and lets you switch in 1 click in the Studio header:
 
 ```env
+GEMINI_API_KEY=...
 OPENAI_API_KEY=sk-...
 ```
 
@@ -148,7 +159,7 @@ curl -X POST http://127.0.0.1:8765/api/pixel/launch_face
 ## CLI Tools & Testing
 
 ```bash
-# Run full unit test suite (48 tests)
+# Run full unit test suite (56 tests)
 uv run pytest -v
 
 # Recalibrate 2x2 Jacobian camera <-> motor mapping
@@ -168,7 +179,12 @@ Open `http://127.0.0.1:8765/face?demo=1` in any browser to inspect the 120 Hz 3D
 
 ---
 
-## Technical Notes & Empirical Findings
+## Technical Notes & Security
 
-- **DJI Osmo Mobile 3 BLE (`CmdId 0x0C`)**: Packets must be chunked to `<= 20` bytes on characteristic `fff5`, speeds should stay within `<= 96 °/s` with `roll = 0` for reliable gesture execution, and idle `send_speed(0, 0)` traffic is silenced after 2 brake packets to keep the BLE link stable.
-- **No Secrets Committed**: `.env`, `logs/`, `data/`, and Android `build/` / `*.keystore` are strictly gitignored.
+- **DJI Osmo Mobile 3 BLE Protocol (`CmdSet=0x04`)**:
+  - GATT writes on `fff5` are chunked to `<= 20` bytes; `CmdId=0x0C` speed packets stay within `<= 96 °/s` with `roll = 0` (`> 100 °/s` is silently dropped by the OM3 firmware).
+  - `CmdId=0x0D` (`0x2AB5` LE) sends the DUML Resume/Exit-Standby heartbeat (`WAKE MOTORS` + 45 s idle keepalive) alongside a quiet 6 s `send_speed(0, 0)` keepalive.
+- **Public Repository Security**:
+  - Studio binds exclusively to `127.0.0.1` (loopback only).
+  - Both `GEMINI_API_KEY` and `OPENAI_API_KEY` remain 100% server-side in Python (the browser connects only to local `/ws/gemini_live` or `/api/live/session`).
+  - `.env`, `logs/`, `data/`, `*.apk`, and `*.keystore` are strictly excluded via `.gitignore`.
