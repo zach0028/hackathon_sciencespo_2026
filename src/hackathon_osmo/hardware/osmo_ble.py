@@ -217,14 +217,20 @@ class OsmoBleClient:
         await self.send_raw(pkt)
 
     async def wake_motors_sequence(self) -> None:
-        """Multi-stage BLE wake sequence to exit OM3 standby and re-energize motor control."""
-        await self.send_resume_motors()
-        await asyncio.sleep(0.06)
-        await self.send_resume_motors()
-        await asyncio.sleep(0.06)
+        """Safe BLE wake sequence to exit OM3 standby WITHOUT accidentally toggling awake motors to sleep!
+
+        Empirically verified on OM3: CmdId=0x0D payload=0x2AB5 is a Standby TOGGLE (Sleep <-> Wake).
+        Therefore:
+        - Send it AT MOST ONCE (never twice in a row!).
+        - Send it ONLY when IMU pitch confirms the gimbal is actually collapsed/asleep (< -25°)
+          or attitude is unknown.
+        """
+        att = self.last_attitude
+        needs_toggle = att is None or att.pitch_deg < -25.0
+        if needs_toggle:
+            await self.send_resume_motors()
+            await asyncio.sleep(0.18)
         await self.send_follow_mode()
-        await asyncio.sleep(0.06)
-        await self.send_recenter()
         await asyncio.sleep(0.08)
         await self.send_speed(0.0, 0.0, 0.0, duration_ds=2)
 

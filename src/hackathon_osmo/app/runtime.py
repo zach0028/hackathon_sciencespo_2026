@@ -1293,30 +1293,31 @@ class StudioRuntime:
             speed_dps = max(25.0, min(85.0, float(args.get("speed_dps", 52.0))))
 
             if is_scan:
-                span_deg = max(80.0, min(220.0, float(args.get("span_deg", 150.0))))
+                span_deg = max(70.0, min(140.0, float(args.get("span_deg", 110.0))))
+                scan_spd = max(45.0, min(75.0, float(args.get("speed_dps", 62.0))))
                 half = span_deg / 2.0
                 self.arbiter.ai_hold_mode = True
                 if self.hilight.connected:
                     self.hilight.start_reaction("search")
-                self.arbiter.log("ARM", f"Balayage panoramique IA ({span_deg:.0f}° @ {speed_dps:.0f}°/s)")
+                self.arbiter.log("ARM", f"Balayage panoramique IA ({span_deg:.0f}° @ {scan_spd:.0f}°/s)")
 
                 captures: list[dict[str, Any]] = []
-                await self.arbiter.move_relative_deg(-half, 0.0, speed_dps, hold_after=True)
-                await asyncio.sleep(0.28)
+                await self.arbiter.move_relative_deg(-half, 0.0, scan_spd, hold_after=True)
+                await asyncio.sleep(0.16)
                 if (j := self._get_latest_frame_jpeg(high_res=False)):
                     captures.append({"label": f"GAUCHE (-{half:.0f}°)", "jpeg": j, "detail": "low"})
 
-                await self.arbiter.move_relative_deg(+half, 0.0, speed_dps, hold_after=True)
-                await asyncio.sleep(0.22)
+                await self.arbiter.move_relative_deg(+half, 0.0, scan_spd, hold_after=True)
+                await asyncio.sleep(0.14)
                 if (j := self._get_latest_frame_jpeg(high_res=False)):
                     captures.append({"label": "CENTRE (0°)", "jpeg": j, "detail": "low"})
 
-                await self.arbiter.move_relative_deg(+half, 0.0, speed_dps, hold_after=True)
-                await asyncio.sleep(0.28)
+                await self.arbiter.move_relative_deg(+half, 0.0, scan_spd, hold_after=True)
+                await asyncio.sleep(0.16)
                 if (j := self._get_latest_frame_jpeg(high_res=False)):
                     captures.append({"label": f"DROITE (+{half:.0f}°)", "jpeg": j, "detail": "low"})
 
-                await self.arbiter.move_relative_deg(-half, 0.0, speed_dps, hold_after=False)
+                await self.arbiter.move_relative_deg(-half, 0.0, scan_spd, hold_after=False)
                 self.arbiter.reset_face_loss_timers()
                 self.arbiter.ai_hold_mode = False
                 if self.hilight.connected:
@@ -1917,13 +1918,14 @@ class StudioRuntime:
                     self.osmo_name = dev.name or dev.address
                     self.osmo_connected = True
                     self.watchdog.reset()
-                    # Immediately send a gentle DUML Resume (0x0D 0x2AB5) on connect to exit idle standby!
+                    # NEVER send CmdId=0x0D 0x2AB5 blindly on connect — it is a Standby TOGGLE on OM3
+                    # that puts awake motors straight to sleep! Send safe 0-speed keepalive instead.
                     try:
-                        await client.send_resume_motors()
-                        self.watchdog.note_ble_tx(is_resume=True)
+                        await client.send_speed(0.0, 0.0, 0.0, duration_ds=2)
+                        self.watchdog.note_ble_tx()
                     except Exception:
                         pass
-                    self.arbiter.log("OSMO", f"Connecté en BLE à {self.osmo_name} (anti-veille 0x0D actif)")
+                    self.arbiter.log("OSMO", f"Connecté en BLE à {self.osmo_name} (anti-butée 10°/s actif)")
                 except Exception as exc:
                     self.osmo_connected = False
                     self._osmo = None

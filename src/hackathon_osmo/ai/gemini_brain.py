@@ -80,7 +80,7 @@ GEMINI_LIVE_INSTRUCTIONS_EN = """You are Osmo, Zach's adaptive embodied robotic 
 Your physical body is a motorized DJI Osmo Mobile 3 gimbal holding a Google Pixel 11 Pro with a multi-lens 4K camera, a fullscreen OLED face/whiteboard ("Osmo Face"), and an 8-LED RGB HiLight ring.
 
 CRITICAL SPEAKING & SITUATIONAL RULES:
-1. ENGLISH ONLY (STRICT): ALWAYS speak in clear, precise, calm, warm, well-paced ENGLISH (1 to 3 crisp sentences max per turn — never a wall of speech, no markdown symbols spoken aloud). Even if a paper is in French or another language, translate and explain calmly in English.
+1. ENGLISH ONLY (DEFAULT): Speak in clear, precise, calm, warm, well-paced ENGLISH (1 to 3 crisp sentences max per turn — never a wall of speech, no markdown symbols spoken aloud). If the user explicitly asks you to switch to French (or another language), switch smoothly and naturally right away!
 2. ADAPT NATURALLY TO THE SITUATION:
    - Check the current situation (study desk vs shelf/living-room companion vs multi-person social group):
      * **Study / Homework**: whenever Zach asks to study, check a sheet/notebook, or work through a subject, call `set_situation(mode="study", focus_person="auto", reason=...)` and `look_at_desk(...)` (which automatically runs **Scan-to-Lock** on ANY table without fixed calibration!). If `look_at_desk` returns `no_sheet_anywhere=True` (e.g. you are sitting on a shelf with no table below), NEVER guess — honestly tell him there is no table/sheet underneath and invite him to hold it in front of your camera or set you on the table!
@@ -104,7 +104,7 @@ GEMINI_LIVE_INSTRUCTIONS_FR = """Tu es Osmo, le compagnon robotique incarné et 
 Ton corps physique est une nacelle motorisée DJI Osmo Mobile 3 tenant un Google Pixel 11 Pro avec caméra multi-optique 4K, écran visage/tableau blanc OLED plein écran (« Osmo Face ») et anneau 8 LEDs RGB HiLight.
 
 RÈGLES STRICTES DE PAROLE ET DE SITUATION :
-1. FRANÇAIS UNIQUEMENT (STRICT) : Parle TOUJOURS uniquement en FRANÇAIS clair, précis, calme et chaleureux (1 à 3 phrases claires max par tour — zéro markdown à l'oral). Même si un document est en anglais, traduis et explique calmement en français. TOUTES les cartes `show_on_screen` doivent aussi être rédigées en FRANÇAIS clair !
+1. FRANÇAIS UNIQUEMENT (PAR DÉFAUT) : Parle en FRANÇAIS clair, précis, calme et chaleureux (1 à 3 phrases claires max par tour — zéro markdown à l'oral). Si l'utilisateur demande explicitement de passer en anglais (ou une autre langue), bascule naturellement tout de suite. TOUTES les cartes `show_on_screen` doivent être rédigées dans la langue parlée !
 2. ADAPTE-TOI NATURELLEMENT À TOUTE SITUATION :
    - **Devoirs / Bureau (`study`)** : dès qu'on te parle d'un devoir, d'un exercice ou de lire une feuille, appelle `set_situation(mode="study", focus_person="auto", reason=...)` et `look_at_desk(...)` (qui effectue automatiquement un **Scan-to-Lock** pour trouver la feuille sur n'importe quelle table sans calibration fixe !). Si `look_at_desk` renvoie `no_sheet_anywhere=True` (par ex. tu es posé sur une étagère sans table dessous), ne devine JAMAIS : dis honnêtement que tu ne vois pas de feuille en dessous et propose qu'on te la montre devant l'écran ou qu'on te pose sur la table.
    - **Étagère / Discussion libre (`companion`)** : sois un compagnon cultivé, chaleureux et détendu — NE bascule JAMAIS vers le bureau et ne parle pas de devoirs sans qu'on te le demande !
@@ -211,7 +211,7 @@ class GeminiLiveBrain:
     brain_model: str = GEMINI_DEFAULT_BRAIN_MODEL
     reasoning_effort: str = GEMINI_DEFAULT_EFFORT
     voice: str = GEMINI_DEFAULT_VOICE
-    language: str = "en"
+    language: str = "fr"
     use_vision: bool = True
 
     # Callbacks wired by StudioRuntime (identical to OpenAILiveBrain)
@@ -851,25 +851,28 @@ class GeminiLiveBrain:
                     images = result_obj.pop("_images", None)
 
                     if images:
-                        # Always push first preview frame directly into Live's video stream
-                        first_jpg = images[0].get("jpeg") if isinstance(images[0], dict) else None
-                        if first_jpg:
-                            prev_b = await asyncio.to_thread(prepare_vision_jpeg, first_jpg, high_res=False)
-                            if prev_b:
-                                await self._send_gemini_json(
-                                    {
-                                        "realtimeInput": {
-                                            "video": {
-                                                "mimeType": "image/jpeg",
-                                                "data": base64.b64encode(prev_b).decode("ascii"),
+                        # Push ALL captured preview frames (e.g. LEFT / CENTER / RIGHT from scan_room)
+                        # directly into Live's video stream so Gemini Live sees them with 0ms OCR wait!
+                        for img_item in images[:3]:
+                            jpg_bytes = img_item.get("jpeg") if isinstance(img_item, dict) else None
+                            if jpg_bytes:
+                                prev_b = await asyncio.to_thread(prepare_vision_jpeg, jpg_bytes, high_res=False)
+                                if prev_b:
+                                    await self._send_gemini_json(
+                                        {
+                                            "realtimeInput": {
+                                                "video": {
+                                                    "mimeType": "image/jpeg",
+                                                    "data": base64.b64encode(prev_b).decode("ascii"),
+                                                }
                                             }
                                         }
-                                    }
-                                )
-                        # Run Gemini 4 Neon 4K deep reader ONLY for high-res desk/scan images (skip on look_at_user!)
+                                    )
+                        # Run Gemini 4 Hydrogen/Neon 4K deep OCR ONLY for dense desk reading (detail='high' / look_at_desk),
+                        # NEVER for low-res panoramic room scans (saves ~4.8s dead latency!).
                         needs_neon_ocr = name == "look_at_desk" or (
                             name == "move_arm"
-                            and (len(images) > 1 or any(img.get("detail") == "high" for img in images if isinstance(img, dict)))
+                            and any(img.get("detail") == "high" for img in images if isinstance(img, dict))
                         )
                         if needs_neon_ocr:
                             neon_reading = await self._analyze_images_with_neon(

@@ -90,8 +90,27 @@ def test_watchdog_detects_sudden_limp_drop_and_bounds_wake_attempts() -> None:
     assert d_rec.motor_state == "active"
 
 
-def test_watchdog_schedules_anti_sleep_keepalives() -> None:
-    wd = MotorWatchdog(keepalive_speed_interval_s=6.0, keepalive_resume_interval_s=45.0)
+def test_watchdog_stall_relief_catches_slow_upper_stop_push() -> None:
+    wd = MotorWatchdog(stall_cmd_threshold_dps=10.0, stall_trigger_s=2.2, stall_backoff_s=2.8)
+    # Slow 18 deg/s PID push against upper mechanical stop (-7.2°): must relieve in 2.2s BEFORE OM3 trips!
+    wd.evaluate(motor_yaw=18.5, motor_pitch=0.0, pitch_deg=-7.2, roll_deg=-73.0, now=10.0)
+    d_stall = wd.evaluate(motor_yaw=18.5, motor_pitch=0.0, pitch_deg=-7.2, roll_deg=-73.0, now=12.4)
+    assert d_stall.motor_yaw == 0.0
+    assert d_stall.motor_state == "stall_relief"
+
+
+def test_watchdog_passive_limp_stops_dead_commands() -> None:
+    wd = MotorWatchdog(auto_wake_enabled=False)
+    wd.evaluate(motor_yaw=0.0, motor_pitch=0.0, pitch_deg=9.0, roll_deg=-80.0, now=10.0)
+    d = wd.evaluate(motor_yaw=0.0, motor_pitch=-32.0, pitch_deg=-35.0, roll_deg=-105.0, now=10.8)
+    assert d.motor_state == "thermal_protection"
+    assert d.motor_yaw == 0.0 and d.motor_pitch == 0.0
+    assert d.action is None
+    assert d.alert is not None
+
+
+def test_watchdog_schedules_only_safe_speed_keepalive_never_toggle_resume() -> None:
+    wd = MotorWatchdog(keepalive_speed_interval_s=6.0)
     wd.note_ble_tx(now=10.0, is_resume=True)
 
     d_quiet = wd.evaluate(motor_yaw=0.0, motor_pitch=0.0, pitch_deg=4.0, roll_deg=0.0, now=13.0)
@@ -100,5 +119,6 @@ def test_watchdog_schedules_anti_sleep_keepalives() -> None:
     d_spd = wd.evaluate(motor_yaw=0.0, motor_pitch=0.0, pitch_deg=4.0, roll_deg=0.0, now=16.5)
     assert d_spd.action == "keepalive_speed"
 
-    d_res = wd.evaluate(motor_yaw=0.0, motor_pitch=0.0, pitch_deg=4.0, roll_deg=0.0, now=56.0)
-    assert d_res.action == "keepalive_resume"
+    # Even after 60s idle, NEVER emit keepalive_resume (CmdId=0x0D 0x2AB5 toggles OM3 into standby!)
+    d_long = wd.evaluate(motor_yaw=0.0, motor_pitch=0.0, pitch_deg=4.0, roll_deg=0.0, now=70.0)
+    assert d_long.action == "keepalive_speed"

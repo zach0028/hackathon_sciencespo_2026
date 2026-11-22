@@ -30,15 +30,17 @@ class WatchdogDecision:
 class MotorWatchdog:
     """Pure, deterministic motor resilience state machine (unit-testable without BLE)."""
 
-    # Stall relief parameters (conservative > 3.2s because OM3 IMU notifies at ~1 Hz!)
-    stall_cmd_threshold_dps: float = 35.0
-    stall_min_delta_deg: float = 1.2
-    stall_trigger_s: float = 3.2
-    stall_backoff_s: float = 2.0
+    # Stall relief parameters: catch slow PID end-stop pushing (>= 10 deg/s, e.g. 18-20 deg/s at upper pitch stop)
+    # after 2.2s (>2 OM3 1 Hz IMU packets) BEFORE DJI's internal overcurrent breaker ever trips!
+    stall_cmd_threshold_dps: float = 10.0
+    stall_min_delta_deg: float = 1.0
+    stall_trigger_s: float = 2.2
+    stall_backoff_s: float = 2.8
 
-    # Anti-sleep BLE keepalive intervals
+    # Anti-sleep BLE keepalive (ONLY safe 0-speed CmdId=0x0C! NEVER send CmdId=0x0D 0x2AB5 periodically:
+    # empirical IMU logs proved 0x0D 0x2AB5 is a Standby TOGGLE on OM3 that puts awake motors to sleep!)
     keepalive_speed_interval_s: float = 6.0
-    keepalive_resume_interval_s: float = 45.0
+    keepalive_resume_interval_s: float = 0.0  # disabled permanently (toggle command!)
 
     # Limp / standby detection (passive alert only by default — never surprise-recenter mid-tracking!)
     auto_wake_enabled: bool = False
@@ -220,6 +222,23 @@ class MotorWatchdog:
                 self.motor_state = "active"
                 alert = "Moteurs DJI OM3 réveillés et actifs !"
 
+        if limp_detected and not self.auto_wake_enabled:
+            prev_state = self.motor_state
+            self.motor_state = "thermal_protection"
+            limp_alert = (
+                f"Moteurs DJI OM3 en veille/protection (pitch={pitch_deg:+.1f}°) — "
+                "commandes suspendues. Clique WAKE MOTORS (ou 1× bouton M)."
+                if prev_state != "thermal_protection" and pitch_deg is not None
+                else None
+            )
+            return WatchdogDecision(
+                motor_yaw=0.0,
+                motor_pitch=0.0,
+                motor_state=self.motor_state,
+                action=None,
+                alert=limp_alert,
+            )
+
         if limp_detected and self.auto_wake_enabled:
             if t < self._thermal_until_t:
                 # Cool-down active: don't hammer overheated motors, keep Studio/voice alive
@@ -283,14 +302,10 @@ class MotorWatchdog:
         elif self.motor_state not in ("standby_recovering", "thermal_protection"):
             self.motor_state = "active"
 
-        # 4. Anti-sleep BLE heartbeat when idle
+        # 4. Safe anti-sleep BLE heartbeat when idle (ONLY 0-speed CmdId=0x0C, NEVER 0x0D toggle!)
         is_idle = abs(safe_yaw) < 0.2 and abs(safe_pitch) < 0.2
         if is_idle:
-            if not desk_mode and (t - self._last_resume_tx_t) >= self.keepalive_resume_interval_s:
-                action = "keepalive_resume"
-                self._last_resume_tx_t = t
-                self._last_speed_tx_t = t
-            elif (t - self._last_speed_tx_t) >= self.keepalive_speed_interval_s:
+            if (t - self._last_speed_tx_t) >= self.keepalive_speed_interval_s:
                 action = "keepalive_speed"
                 self._last_speed_tx_t = t
         else:

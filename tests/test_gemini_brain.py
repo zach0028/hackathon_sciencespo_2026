@@ -82,10 +82,10 @@ def test_extract_gemini_text_and_calls_skips_thoughts() -> None:
 def test_gemini_brain_language_and_instructions() -> None:
     brain = GeminiLiveBrain()
     assert brain.live_model == GEMINI_LIVE_MODEL
-    assert "ENGLISH ONLY" in brain.live_instructions()
-    asyncio.run(brain.set_language("fr"))
     assert "FRANÇAIS UNIQUEMENT" in brain.live_instructions()
     assert "FRANÇAIS" in brain.brain_instructions()
+    asyncio.run(brain.set_language("en"))
+    assert "ENGLISH ONLY" in brain.live_instructions()
 
 
 def test_runtime_provider_switch_syncs_language_and_snapshot() -> None:

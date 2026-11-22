@@ -40,7 +40,7 @@ LIVE_MODEL = "gpt-live-1.1"
 DEFAULT_BRAIN_MODEL = "gpt-6.2-sol"
 DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_LIVE_VOICE = "cedar"
-DEFAULT_LANGUAGE = "en"  # "en" (Full English) | "fr" (Full Français)
+DEFAULT_LANGUAGE = "fr"  # "fr" (Full Français par défaut) | "en" (Full English)
 
 LIVE_VOICES = [
     {"id": "cedar", "label": "Cedar (Male · Recommended)"},

@@ -169,6 +169,8 @@ class SocialGroupTracker:
                 self.active_target_id = None
             if self._manual_focus_id == pid:
                 self._manual_focus_id = None
+        if not self._people:
+            self._next_id = 1
 
         # Clear stale last_box references before matching this frame
         for p in self._people.values():
