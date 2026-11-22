@@ -417,6 +417,17 @@ async def ws_endpoint(ws: WebSocket) -> None:
             elif action == "return_face_mode":
                 asyncio.create_task(runtime.return_to_face_mode())
 
+            elif action == "set_situation":
+                mode = str(msg.get("mode", "auto"))
+                focus = str(msg.get("focus_person", "auto"))
+                reason = str(msg.get("reason", "Changement depuis Studio"))
+                asyncio.create_task(
+                    runtime.execute_robot_tool(
+                        "set_situation",
+                        {"mode": mode, "focus_person": focus, "reason": reason},
+                    )
+                )
+
             elif action == "save_face_pose":
                 runtime.save_current_face_pose()
 

@@ -1,4 +1,4 @@
-"""Fast Apple Silicon native face detection using macOS Vision framework (ANE/GPU)."""
+"""Fast Apple Silicon native face detection (+ optional ANE lip-activity landmarks for multi-speaker social mode)."""
 
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ class FaceBox:
     w: float
     h: float
     confidence: float
+    # Normalized inner-lip vertical opening inside the face box (0.0 when unmeasured/closed, ~0.04..0.16 speaking)
+    mouth_open: float = 0.0
 
     @property
     def cx(self) -> float:
@@ -32,13 +34,33 @@ class FaceBox:
         return self.w * self.h
 
 
+def _extract_mouth_open(obs: object) -> float:
+    """Extract distance-invariant lip opening ratio from a Vision VNFaceObservation."""
+    try:
+        lm = obs.landmarks()  # type: ignore[attr-defined]
+        if lm is None:
+            return 0.0
+        region = lm.innerLips() or lm.outerLips()
+        if region is None:
+            return 0.0
+        count = int(region.pointCount())
+        if count < 4:
+            return 0.0
+        pts = region.normalizedPoints()
+        ys = [float(pts[i].y) for i in range(count)]
+        span = max(ys) - min(ys)
+        return round(max(0.0, min(1.0, span)), 4)
+    except Exception:
+        return 0.0
+
+
 class AppleVisionFaceDetector:
-    """Zero-download, Neural-Engine-accelerated face detector on macOS."""
+    """Zero-download, Neural-Engine-accelerated face & multi-speaker lip detector on macOS."""
 
     def __init__(self) -> None:
         self._color_space = Quartz.CGColorSpaceCreateDeviceRGB()
 
-    def detect(self, bgr_frame: np.ndarray) -> list[FaceBox]:
+    def detect(self, bgr_frame: np.ndarray, *, measure_mouth: bool = False) -> list[FaceBox]:
         h, w = bgr_frame.shape[:2]
         # Convert BGR -> RGBA contiguous bytes for CGImage
         rgba = np.empty((h, w, 4), dtype=np.uint8)
@@ -65,7 +87,11 @@ class AppleVisionFaceDetector:
         if cg_image is None:
             return []
 
-        req = Vision.VNDetectFaceRectanglesRequest.alloc().init()
+        req = (
+            Vision.VNDetectFaceLandmarksRequest.alloc().init()
+            if measure_mouth
+            else Vision.VNDetectFaceRectanglesRequest.alloc().init()
+        )
         handler = Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(
             cg_image, None
         )
@@ -81,6 +107,7 @@ class AppleVisionFaceDetector:
             fw = float(bb.size.width)
             fh = float(bb.size.height)
             fy = 1.0 - float(bb.origin.y) - fh
+            mouth = _extract_mouth_open(obs) if measure_mouth else 0.0
             results.append(
                 FaceBox(
                     x=fx,
@@ -88,6 +115,7 @@ class AppleVisionFaceDetector:
                     w=fw,
                     h=fh,
                     confidence=float(obs.confidence()),
+                    mouth_open=mouth,
                 )
             )
         return results

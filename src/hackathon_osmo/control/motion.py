@@ -96,6 +96,7 @@ class TrackingInterpretation:
     cmd_pitch_dps: float = 0.0
     cmd_roll_dps: float = 0.0
     active_gesture: str | None = None
+    active_person_id: str | None = None
     vision_ms: float = 0.0
     last_exit_dir: str = "center"
 
@@ -333,7 +334,13 @@ class MotionArbiter:
         return None
 
     def update_vision(
-        self, faces: list[FaceBox], vision_ms: float, now: float | None = None
+        self,
+        faces: list[FaceBox],
+        vision_ms: float,
+        now: float | None = None,
+        *,
+        preferred_face: FaceBox | None = None,
+        active_person_id: str | None = None,
     ) -> TrackingInterpretation:
         t = now if now is not None else time.monotonic()
         dt = max(1e-3, min(0.25, t - self._prev_t)) if self._prev_t > 0 else 1 / 30.0
@@ -342,12 +349,13 @@ class MotionArbiter:
         interp = TrackingInterpretation(
             vision_ms=round(vision_ms, 1),
             faces_count=len(faces),
+            active_person_id=active_person_id,
             last_exit_dir="droite" if self._last_exit_x > 0.1 else ("gauche" if self._last_exit_x < -0.1 else "centre"),
         )
 
-        # 1. Process face detection (sticky selection + One-Euro filter)
+        # 1. Process face detection (SocialGroupTracker preferred target OR sticky selection + One-Euro filter)
         if faces and not self.desk_mode:
-            best = self._select_sticky_face(faces)
+            best = preferred_face if preferred_face is not None else self._select_sticky_face(faces)
             raw_x = best.cx * 2.0 - 1.0
             raw_y = best.cy * 2.0 - 1.0
 

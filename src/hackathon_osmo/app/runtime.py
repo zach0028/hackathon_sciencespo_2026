@@ -22,6 +22,7 @@ from hackathon_osmo.ai.live_brain import (
     OpenAILiveBrain,
 )
 from hackathon_osmo.ai.memory import OsmoMemoryStore
+from hackathon_osmo.control.context import SituationalContext
 from hackathon_osmo.control.motion import (
     GESTURES,
     MotionArbiter,
@@ -91,9 +92,11 @@ class StudioRuntime:
         self.ui_version: str = "dev"
         self.detector = AppleVisionFaceDetector()
         self.sheet_detector = AppleVisionSheetDetector()
+        self.context = SituationalContext()
         self._latest_sheet: SheetDetection = SheetDetection()
         self._latest_pointer: PointingTarget = PointingTarget()
         self._last_sheet_det_t: float = 0.0
+        self._last_mouth_det_t: float = 0.0
         self._last_orient_toggle_t: float = 0.0
         self.screen_card: dict[str, Any] = {
             "mode": "none",
@@ -367,7 +370,9 @@ class StudioRuntime:
             screen_txt = f", screen_board={self.screen_card.get('mode')}:{self.screen_card.get('title')} [{sc_items}]"
         if self._came_from_desk_for_board and not self.arbiter.desk_mode:
             screen_txt += ", came_from_desk=True"
+        ctx_txt = self.context.prompt_summary()
         return (
+            f"{ctx_txt}, "
             f"camera={self.facing} ({self.width}x{self.height} zoom={self.camera_zoom:.2f}x), "
             f"mode_bureau={self.arbiter.desk_mode}, pivoting={time.monotonic() < self._hw_busy_until}, ai_hold={self.arbiter.ai_hold_mode}, "
             f"face_detected={interp.face_detected} (conf={interp.confidence:.2f}, pos={interp.cx:+.2f},{interp.cy:+.2f}), "
@@ -823,7 +828,9 @@ class StudioRuntime:
             if self._osmo.is_landscape() is False:
                 await self._osmo.send_toggle_orientation()
                 await asyncio.sleep(1.0)
-            face_pitch = float(self.face_pose.get("pitch_deg", 5.0))
+            face_pitch = self.context.preferred_face_pitch(
+                fallback_pitch=float(self.face_pose.get("pitch_deg", 5.0))
+            )
             if abs(self._osmo.last_attitude.pitch_deg - face_pitch) > 15.0:
                 await self._servo_pitch_to_imu(face_pitch, timeout_s=1.3)
             self._face_quat = self._osmo.last_attitude.quat
@@ -846,7 +853,9 @@ class StudioRuntime:
         """Fast geodesic unwind back to saved head quaternion with simultaneous upward pitch lift (~1.3s)."""
         if not self._osmo or not self.osmo_connected:
             return
-        face_pitch = float(self.face_pose.get("pitch_deg", 5.0))
+        face_pitch = self.context.preferred_face_pitch(
+            fallback_pitch=float(self.face_pose.get("pitch_deg", 5.0))
+        )
         if self._face_quat is not None and self._osmo.last_attitude is not None:
             self._hw_busy_until = time.monotonic() + 6.0
             try:
@@ -899,10 +908,11 @@ class StudioRuntime:
         4. When scan_pages=True: switches to 4K 1.0x and slices BOTH pages of an open spread into razor-sharp
            overlapping upright HD tiles ([PAGE GAUCHE HD] + [PAGE DROITE HD]) in ONE single tool call!
         """
-        # Desk sheet is ALWAYS downward (+30°..+65°, calibrated mean +49.3° on OM3 IMU) — never upward/ceiling!
-        raw_target_pitch = float(self.desk_pose.get("pitch_deg", 49.3))
+        # Prefer dynamically discovered table pose from this session if available (zero recalibration on new desks!)
+        session_pose = self.context.session_desk_pose or {}
+        raw_target_pitch = float(session_pose.get("pitch_deg", self.desk_pose.get("pitch_deg", 49.3)))
         target_pitch = max(30.0, min(65.0, abs(raw_target_pitch)))
-        pivot_deg = float(self.desk_pose.get("pivot_deg", 135.0))
+        pivot_deg = float(session_pose.get("pivot_deg", self.desk_pose.get("pivot_deg", 135.0)))
         use_4k = ultra_hd or scan_pages
         req_w, req_h = (3840, 2160) if use_4k else (
             int(self.desk_pose.get("width", 2688)),
@@ -983,12 +993,50 @@ class StudioRuntime:
 
             # If no sheet seen at 1.0x and user didn't force a zoom, widen to 0.51x ultra-wide to survey the desk!
             if not sheet.found and zoom is None and self.camera_zoom > 0.6:
-                self.arbiter.log("SHEET", "Aucune feuille vue en 1x → passage ultra grand-angle 0.51x pour scanner le bureau")
+                self.arbiter.log("SHEET", "Aucune feuille vue en 1x → passage ultra grand-angle 0.51x pour scanner la table")
                 await self.configure_camera(facing="back", zoom=0.51, width=req_w, height=req_h, wait_frame=True)
                 sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.70, min_wait_s=0.11)
                 if sharp_frame is not None:
                     sheet = await asyncio.to_thread(self._detect_sheet_sync, sharp_frame)
                     self._latest_sheet = sheet
+
+            # Adaptive Scan-to-Lock: if still no sheet (e.g. Osmo moved to a new table or side),
+            # run a bounded 3-zone downward sweep across the surface to locate any bright paper!
+            scanned_for_sheet = False
+            if not sheet.found and self.osmo_connected:
+                scanned_for_sheet = True
+                self.arbiter.log("SHEET", "Scan-to-Lock adaptatif : balayage de la surface pour localiser une feuille...")
+                # Safe bounded search probes: left, right, then center slightly further out
+                probes: list[tuple[float, float, str]] = [
+                    (-36.0, 0.0, "gauche"),
+                    (+72.0, 0.0, "droite"),
+                    (-36.0, +10.0, "centre-avant"),
+                ]
+                for pan_delta, tilt_delta, zone_lbl in probes:
+                    # Keep pitch safely >= +32° (never drift toward ceiling!)
+                    cur_p = self._osmo.last_attitude.pitch_deg if (self._osmo and self._osmo.last_attitude) else target_pitch
+                    safe_tilt = tilt_delta
+                    if cur_p - safe_tilt < 32.0:
+                        safe_tilt = 0.0
+                    await self.arbiter.move_relative_deg(pan_delta, safe_tilt, speed_dps=58.0, hold_after=True)
+                    sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.55, min_wait_s=0.14)
+                    if sharp_frame is not None:
+                        sheet = await asyncio.to_thread(self._detect_sheet_sync, sharp_frame)
+                        self._latest_sheet = sheet
+                        if sheet.found:
+                            self.arbiter.log(
+                                "SHEET",
+                                f"Scan-to-Lock réussi (zone {zone_lbl}) : feuille verrouillée [{sheet.source} {sheet.confidence:.2f}] !",
+                            )
+                            break
+
+                # If a sheet was discovered in 0.51x ultra-wide, switch back to 1.0x crisp reading after centering
+                if not sheet.found:
+                    self.context.record_no_desk_sheet()
+                    self.arbiter.log(
+                        "SHEET",
+                        "Scan-to-Lock : aucune feuille trouvée autour d'Osmo (étagère ou table vide ?)",
+                    )
 
             if sheet.found:
                 # 1. Mechanical auto-centering ONLY when genuinely off-center (>16% in 2.7K/4K -> saves ~0.9s!)
@@ -1012,6 +1060,23 @@ class StudioRuntime:
                     if sharp_frame is not None:
                         sheet = await asyncio.to_thread(self._detect_sheet_sync, sharp_frame)
                         self._latest_sheet = sheet
+
+                # If found via 0.51x scan and sheet fits well in 1.0x, step up to crisp 1.0x 50MP main lens!
+                if scanned_for_sheet and zoom is None and self.camera_zoom < 0.8 and max(sheet.w, sheet.h) < 0.65:
+                    await self.configure_camera(facing="back", zoom=1.0, width=req_w, height=req_h, wait_frame=True)
+                    sharp_frame, sharpness = await self._wait_sharp_frame(max_wait_s=0.70, min_wait_s=0.15)
+                    auto_zoom_applied = self.camera_zoom
+                    if sharp_frame is not None:
+                        sheet = await asyncio.to_thread(self._detect_sheet_sync, sharp_frame)
+                        self._latest_sheet = sheet
+
+                # Save discovered table pose for instant return during this session!
+                att_lock = self._osmo.last_attitude if self._osmo else None
+                self.context.record_desk_found(
+                    pitch_deg=att_lock.pitch_deg if att_lock else target_pitch,
+                    pan_roll_deg=att_lock.roll_deg if att_lock else None,
+                    pivot_deg=pivot_deg,
+                )
 
                 # 2. Automatic optical lens zoom ONLY when sheet is genuinely tiny (e.g. card / far note, span < 0.28)
                 # For normal notebooks (span >= 0.28), 2688x1512 + upright smart crop is already razor sharp with 0s camera restart!
@@ -1051,6 +1116,7 @@ class StudioRuntime:
             "sharpness": sharpness,
             "scan_pages": scan_pages,
             "sheet_detected": sheet.found,
+            "no_sheet_anywhere": (not sheet.found) and self.context.no_sheet_anywhere,
             "sheet_source": sheet.source,
             "sheet_has_text": sheet.has_text,
             "sheet_ocr_preview": sheet.lines[:8],
@@ -1444,6 +1510,36 @@ class StudioRuntime:
                 out["_spoken_override"] = spoken
             return out
 
+        # --- 8. set_situation (Any-Situation adaptive companion: study / companion / social / ambient / auto) ---
+        if name == "set_situation":
+            mode = str(args.get("mode", "auto"))
+            focus_person = str(args.get("focus_person", "auto"))
+            reason = str(args.get("reason", ""))
+            res = self.context.set_mode(mode, focus_person=focus_person, reason=reason)
+            if not res.get("ok"):
+                return res
+            self.arbiter.log(
+                "CTX",
+                f"Situation → {res['active_mode'].upper()} (policy={res['policy']}, "
+                f"focus={res.get('focused_person') or focus_person}) · {res['reason']}",
+            )
+            # Leaving desk mode automatically when shifting to social/companion/ambient
+            if res["active_mode"] in ("companion", "social", "ambient") and self.arbiter.desk_mode:
+                await self.return_to_face_mode(
+                    search_if_missing=False,
+                    return_image=False,
+                    wait_for_face=False,
+                )
+            elif focus_person != "auto" and self.arbiter.ai_hold_mode:
+                self.arbiter.ai_hold_mode = False
+            if self.hilight.connected:
+                if res["active_mode"] == "ambient":
+                    self.hilight.start_reaction("off")
+                elif res["active_mode"] == "social":
+                    self.hilight.start_reaction("yes")
+            res["people_visible"] = len(self.context.social.visible_people(time.monotonic(), max_age_s=1.2))
+            return res
+
         return {"ok": False, "error": f"Outil inconnu: {name}"}
 
     @property
@@ -1607,29 +1703,48 @@ class StudioRuntime:
             cv2.line(vis, (tx - 14, ty), (tx + 14, ty), (255, 200, 60), 1)
             cv2.line(vis, (tx, ty - 14), (tx, ty + 14), (255, 200, 60), 1)
 
+            people_vis = self.context.social.visible_people(time.monotonic(), max_age_s=0.8)
+            target_pid = self.context.social.active_target_id
+            speaker_pid = self.context.social.active_speaker_id
             best = max(faces, key=lambda f: f.area) if faces else None
-            for f in faces:
+            for idx_f, f in enumerate(faces):
                 x, y = int(f.x * w), int(f.y * h)
                 fw, fh = int(f.w * w), int(f.h * h)
-                is_best = f is best
-                color = (80, 240, 140) if is_best else (140, 140, 140)
+                # Match tracked person badge if available
+                matched_p = min(
+                    people_vis,
+                    key=lambda p: abs(p.cx - f.cx) + abs(p.cy - f.cy),
+                    default=None,
+                )
+                pid_lbl = matched_p.pid if (matched_p and (abs(matched_p.cx - f.cx) + abs(matched_p.cy - f.cy)) < 0.18) else f"P{idx_f + 1}"
+                is_speaking = bool(matched_p and matched_p.pid == speaker_pid and matched_p.is_speaking)
+                is_best = (matched_p is not None and matched_p.pid == target_pid) if len(faces) >= 2 else (f is best)
+                color = (80, 240, 140) if is_best else ((80, 210, 255) if is_speaking else (150, 155, 165))
                 cv2.rectangle(vis, (x, y), (x + fw, y + fh), color, 2 if is_best else 1)
+                tag_extra = " [PARLE]" if is_speaking else ""
                 if is_best:
                     fcx, fcy = int(f.cx * w), int(f.cy * h)
                     cv2.circle(vis, (fcx, fcy), 6, (0, 230, 255), -1)
                     cv2.arrowedLine(vis, (tx, ty), (fcx, fcy), (0, 210, 255), 2, tipLength=0.2)
-                    lbl = f"FACE {int(f.confidence * 100)}% ({interp.cx:+.2f}, {interp.cy:+.2f})"
+                    lbl = f"{pid_lbl}{tag_extra} {int(f.confidence * 100)}% ({interp.cx:+.2f}, {interp.cy:+.2f})"
                     cv2.putText(
-                        vis, lbl, (x, max(24, y - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.58, color, 2, cv2.LINE_AA
+                        vis, lbl, (x, max(24, y - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.56, color, 2, cv2.LINE_AA
+                    )
+                elif len(faces) >= 2:
+                    cv2.putText(
+                        vis, f"{pid_lbl}{tag_extra}", (x, max(22, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.50, color, 1, cv2.LINE_AA
                     )
 
         mode_tag = "MOTEURS LIVE" if self.arbiter.live_motors else "DRY-RUN (SIMULATION)"
+        sit_tag = f"{self.context.active_mode.upper()}"
+        if self.context.policy == "auto":
+            sit_tag = f"AUTO:{sit_tag}"
         hud_color = (80, 240, 140) if self.arbiter.live_motors else (80, 200, 255)
         cv2.rectangle(vis, (0, h - 38), (w, h), (15, 18, 24), -1)
         hud = (
-            f"{mode_tag}  |  {interp.state}  |  "
+            f"{mode_tag}  |  {sit_tag}  |  {interp.state}  |  "
             f"{self.facing.upper()} {self.width}x{self.height} {self.camera_zoom:.1f}x  |  "
-            f"{self._fps_actual:4.1f} fps  vision={interp.vision_ms:4.1f}ms"
+            f"{self._fps_actual:4.1f} fps"
         )
         cv2.putText(vis, hud, (14, h - 13), cv2.FONT_HERSHEY_SIMPLEX, 0.55, hud_color, 1, cv2.LINE_AA)
 
@@ -1734,11 +1849,31 @@ class StudioRuntime:
                     det_ms = sheet.vision_ms
             else:
                 t0 = time.monotonic()
-                faces = await asyncio.to_thread(self.detector.detect, img)
+                measure_mouth = len(self._latest_faces) >= 2 and (now - self._last_mouth_det_t) >= 0.16
+                if measure_mouth:
+                    self._last_mouth_det_t = now
+                faces = await asyncio.to_thread(self.detector.detect, img, measure_mouth=measure_mouth)
                 det_ms = (time.monotonic() - t0) * 1000.0
 
             self._latest_faces = faces
-            self.arbiter.update_vision(faces, det_ms)
+            att_now = self._osmo.last_attitude if self._osmo else None
+            ctx_tick = self.context.update(
+                faces=faces,
+                desk_mode=self.arbiter.desk_mode,
+                sheet_found=self._latest_sheet.found,
+                osmo_speaking=self.brain.speaking,
+                imu_pitch_deg=att_now.pitch_deg if att_now else None,
+                face_centered=(self.arbiter.latest.state == "CENTERED"),
+                now=now,
+            )
+            if ctx_tick.mode_changed and ctx_tick.change_reason:
+                self.arbiter.log("CTX", ctx_tick.change_reason)
+            self.arbiter.update_vision(
+                faces,
+                det_ms,
+                preferred_face=ctx_tick.preferred_face,
+                active_person_id=ctx_tick.active_person_id,
+            )
 
             frame_times.append(now)
             frame_times = [t for t in frame_times if now - t <= 1.0]
@@ -2057,6 +2192,7 @@ class StudioRuntime:
                 "lost_policy": cfg.lost_policy,
             },
             "gestures": [{"id": k, "label": v[0]} for k, v in GESTURES.items()],
+            "situation": self.context.snapshot(),
             "ui_version": self.ui_version,
             "screen": self.screen_card,
             "memory": {

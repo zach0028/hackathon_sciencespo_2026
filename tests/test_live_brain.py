@@ -28,6 +28,7 @@ def test_robot_tools_compact_five_tool_hierarchy() -> None:
         "set_tracking",
         "remember",
         "show_on_screen",
+        "set_situation",
     ]
     for t in ROBOT_TOOLS:
         assert t["strict"] is True

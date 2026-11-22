@@ -20,7 +20,7 @@ def test_openai_tools_to_gemini_preserves_all_tools_and_strips_strict() -> None:
     live_decls = openai_tools_to_gemini(ROBOT_TOOLS, non_blocking=True)
     rest_decls = openai_tools_to_gemini(ROBOT_TOOLS, non_blocking=False)
 
-    assert len(live_decls) == len(ROBOT_TOOLS) == 7
+    assert len(live_decls) == len(ROBOT_TOOLS) == 8
     names = {d["name"] for d in live_decls}
     assert {
         "look_at_user",
@@ -30,6 +30,7 @@ def test_openai_tools_to_gemini_preserves_all_tools_and_strips_strict() -> None:
         "set_tracking",
         "remember",
         "show_on_screen",
+        "set_situation",
     } == names
 
     for d in live_decls:

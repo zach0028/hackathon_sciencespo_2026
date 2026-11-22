@@ -59,6 +59,13 @@ function toggleLiveMotors() {
   if (!state) return;
   send({ action: 'set_live_motors', enabled: !state.osmo.live_motors });
 }
+function cycleSituationMode() {
+  if (!state || !state.situation) return;
+  const order = ['auto', 'study', 'social', 'companion'];
+  const cur = state.situation.policy || 'auto';
+  const next = order[(order.indexOf(cur) + 1) % order.length];
+  send({ action: 'set_situation', mode: next, focus_person: 'auto', reason: `Studio -> ${next}` });
+}
 async function launchPixelFace() {
   try {
     const res = await fetch('/api/pixel/launch_face', { method: 'POST' });
@@ -187,6 +194,14 @@ function render(s) {
   document.getElementById('btn-front').className = s.camera.facing === 'front' ? 'active' : '';
   document.getElementById('btn-back').className = s.camera.facing === 'back' ? 'active' : '';
   document.getElementById('btn-mirror').className = s.camera.mirror ? 'active' : '';
+  const btnSit = document.getElementById('btn-situation');
+  if (btnSit && s.situation) {
+    const names = { study: 'DEVOIR', companion: 'COMPAGNON', social: 'SALON', ambient: 'VEILLE' };
+    const modeLbl = names[s.situation.active_mode] || String(s.situation.active_mode || '').toUpperCase();
+    const ppl = s.situation.people_count >= 2 ? ` (${s.situation.people_count}P)` : '';
+    btnSit.textContent = s.situation.policy === 'auto' ? `AUTO · ${modeLbl}${ppl}` : `${modeLbl}${ppl}`;
+    btnSit.className = s.situation.policy === 'auto' ? 'active' : 'live-on';
+  }
 
   if (s.hilight) {
     const dotHl = document.getElementById('dot-hl');
