@@ -13,7 +13,7 @@ import { SoundEngine } from './soundEngine.js';
 import { ElegntEngine } from './elegntEngine.js';
 
 // =============================================================================
-// 1. STUDIO WEBGL2 RENDERER + ACES FILMIC + SELECTIVE HDR BLOOM
+// 1. WEBGL2 STUDIO RENDERER + ACES FILMIC + SELECTIVE BLOOM
 // =============================================================================
 const container = document.getElementById('viewport');
 const renderer = new THREE.WebGLRenderer({
@@ -25,45 +25,45 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.12;
+renderer.toneMappingExposure = 1.05;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-let envTex = createStudioEnvironment(renderer, 'night');
+let envTex = createStudioEnvironment(renderer, 'day');
 scene.environment = envTex;
-scene.environmentIntensity = 0.85;
+scene.environmentIntensity = 0.95;
 
-const camera = new THREE.PerspectiveCamera(36, window.innerWidth / window.innerHeight, 0.1, 60);
-camera.position.set(3.4, 3.65, 5.75);
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 60);
+camera.position.set(3.45, 3.25, 5.65);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
-controls.minDistance = 1.6;
-controls.maxDistance = 14.5;
+controls.minDistance = 1.5;
+controls.maxDistance = 11.5;
 controls.maxPolarAngle = Math.PI * 0.485;
-controls.target.set(-0.2, 1.55, 0.85);
+controls.target.set(-0.35, 1.65, 0.45);
 controls.update();
 
-// Post-processing pipeline: Crisp selective bloom for the 8 HiLight LEDs + OLED eyes
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
-  0.38, // subtle optical halation — never washes out typography!
-  0.55,
-  0.88
+  0.22, // clean optical glow without washing out daylight plaster walls
+  0.5,
+  0.92
 );
 composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 
 // =============================================================================
-// 2. BUILD STUDIO DESK + CAD-ACCURATE OSMO ROBOT + ELEGNT BEHAVIOR ENGINE
+// 2. SUNLIT ARCHITECTURAL ROOM + PIXEL 11 PRO / DJI OM3 + ELEGNT ENGINE
 // =============================================================================
 const brushedTex = createBrushedMetalTexture();
 const oled = new OledScreenRenderer();
 const rig = new OsmoRobotRig({ oledTexture: oled.texture, brushedMetalTex: brushedTex });
+rig.setRoomMood('day');
 scene.add(rig.root);
 
 const desk = new DeskScene(scene);
@@ -71,25 +71,26 @@ const sound = new SoundEngine();
 const engine = new ElegntEngine(rig, desk, oled, sound);
 
 const logEl = document.getElementById('lbl-log');
+const brandDot = document.getElementById('brand-dot');
 engine.onLog = (msg) => {
   if (logEl) logEl.textContent = msg;
 };
 
-// Boot into a stunning initial Warm Desk Lamp demo pose after 0.6s so Zach sees the HiLight magic immediately!
+// Boot smoothly into Warm Desk Lamp mode so Zach immediately sees the warm beam on the notebook
 setTimeout(() => {
   engine.setLampMode('warm');
-  syncLampButtons('warm');
-}, 600);
+  syncLampUi('warm');
+}, 550);
 
 // =============================================================================
-// 3. SMOOTH CINEMATIC CAMERA PRESETS
+// 3. CINEMATIC CAMERA PRESETS (Keys 1-5)
 // =============================================================================
 const CAM_PRESETS = {
-  hero: { pos: new THREE.Vector3(3.35, 3.55, 5.65), target: new THREE.Vector3(-0.2, 1.55, 0.95) },
-  lamp: { pos: new THREE.Vector3(2.35, 2.75, 4.15), target: new THREE.Vector3(-0.45, 0.95, 1.65) },
-  pov: { pos: new THREE.Vector3(0.0, 3.45, 4.55), target: new THREE.Vector3(0.0, 2.85, 0.0) },
-  rear: { pos: new THREE.Vector3(-1.85, 3.55, -2.55), target: new THREE.Vector3(-0.15, 2.9, 0.0) },
-  top: { pos: new THREE.Vector3(0.0, 8.8, 2.4), target: new THREE.Vector3(-0.2, 0.2, 1.35) },
+  hero: { pos: new THREE.Vector3(3.45, 3.25, 5.65), target: new THREE.Vector3(-0.35, 1.65, 0.45) },
+  lamp: { pos: new THREE.Vector3(2.25, 2.55, 4.05), target: new THREE.Vector3(-0.48, 0.95, 1.55) },
+  pov: { pos: new THREE.Vector3(0.0, 3.35, 4.25), target: new THREE.Vector3(0.0, 2.85, 0.0) },
+  rear: { pos: new THREE.Vector3(-1.75, 3.35, -2.35), target: new THREE.Vector3(-0.18, 2.9, 0.0) },
+  top: { pos: new THREE.Vector3(0.0, 8.2, 2.2), target: new THREE.Vector3(-0.25, 0.2, 1.15) },
 };
 let camLerp = null;
 
@@ -98,7 +99,7 @@ function goToCamera(key) {
   if (!p) return;
   camLerp = {
     t: 0,
-    dur: 0.75,
+    dur: 0.72,
     fromPos: camera.position.clone(),
     toPos: p.pos.clone(),
     fromTarget: controls.target.clone(),
@@ -110,14 +111,14 @@ function goToCamera(key) {
 }
 
 // =============================================================================
-// 4. INTERACTIVE 3D RAYCAST DRAGGING (Notebook, Finger Pointer, Student, Guest)
+// 4. DIRECT 3D INTERACTION (Drag Notebook, Click Page = Finger, Drag Gaze Orbs)
 // =============================================================================
 const raycaster = new THREE.Raycaster();
 const pointerNdc = new THREE.Vector2();
 const dragPlane = new THREE.Plane();
 const dragHit = new THREE.Vector3();
 const dragOffset = new THREE.Vector3();
-let activeDrag = null; // { kind: 'notebook'|'student'|'guest', obj, moved: false }
+let activeDrag = null;
 
 function updatePointerNdc(ev) {
   const rect = renderer.domElement.getBoundingClientRect();
@@ -144,10 +145,16 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     dragPlane.set(new THREE.Vector3(0, 1, 0), -desk.notebook.position.y);
     raycaster.ray.intersectPlane(dragPlane, dragHit);
     dragOffset.subVectors(desk.notebook.position, dragHit);
-    activeDrag = { kind, obj: desk.notebook, startX: ev.clientX, startY: ev.clientY, moved: false, hitPoint: hit.point.clone() };
+    activeDrag = {
+      kind,
+      obj: desk.notebook,
+      startX: ev.clientX,
+      startY: ev.clientY,
+      moved: false,
+      hitPoint: hit.point.clone(),
+    };
   } else if (kind === 'student' || kind === 'guest') {
     const marker = kind === 'student' ? desk.studentMarker : desk.guestMarker;
-    // Drag on vertical plane parallel to camera XY so Zach can move left/right AND up/down!
     const camDir = new THREE.Vector3();
     camera.getWorldDirection(camDir);
     dragPlane.setFromNormalAndCoplanarPoint(camDir.negate(), marker.position);
@@ -159,8 +166,9 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
 
 window.addEventListener('pointermove', (ev) => {
   if (!activeDrag) return;
-  const distPx = Math.hypot(ev.clientX - activeDrag.startX, ev.clientY - activeDrag.startY);
-  if (distPx > 5) activeDrag.moved = true;
+  if (Math.hypot(ev.clientX - activeDrag.startX, ev.clientY - activeDrag.startY) > 5) {
+    activeDrag.moved = true;
+  }
 
   updatePointerNdc(ev);
   raycaster.setFromCamera(pointerNdc, camera);
@@ -168,15 +176,14 @@ window.addEventListener('pointermove', (ev) => {
 
   const next = dragHit.add(dragOffset);
   if (activeDrag.kind === 'notebook') {
-    activeDrag.obj.position.x = Math.max(-2.6, Math.min(2.6, next.x));
-    activeDrag.obj.position.z = Math.max(1.15, Math.min(3.15, next.z));
-    // If finger pointer was placed on page, hide it while moving whole book
+    activeDrag.obj.position.x = Math.max(-2.35, Math.min(2.35, next.x));
+    activeDrag.obj.position.z = Math.max(1.15, Math.min(3.05, next.z));
     if (activeDrag.moved && desk.pointerGroup.visible) {
       desk.pointerGroup.position.x = activeDrag.obj.position.x;
       desk.pointerGroup.position.z = activeDrag.obj.position.z;
     }
   } else {
-    activeDrag.obj.position.x = Math.max(-3.6, Math.min(3.6, next.x));
+    activeDrag.obj.position.x = Math.max(-3.5, Math.min(3.5, next.x));
     activeDrag.obj.position.y = Math.max(2.1, Math.min(4.8, next.y));
     activeDrag.obj.position.z = Math.max(2.4, Math.min(5.2, next.z));
   }
@@ -184,16 +191,15 @@ window.addEventListener('pointermove', (ev) => {
 
 window.addEventListener('pointerup', () => {
   if (!activeDrag) return;
-  // Short click on a notebook page -> snap the interactive pointing finger there!
   if (activeDrag.kind === 'notebook' && !activeDrag.moved && activeDrag.hitPoint) {
     desk.pointerGroup.visible = true;
     desk.pointerGroup.position.set(activeDrag.hitPoint.x, activeDrag.hitPoint.y + 0.03, activeDrag.hitPoint.z);
     engine.sound.playCue('curious');
     if (engine.scenario !== 'desk_lamp') {
       engine.setLampMode('warm');
-      syncLampButtons('warm');
+      syncLampUi('warm');
     }
-    engine._log('Doigt pointeur placé sur la page — Osmo ajuste son faisceau chaud HiLight pile sur ce point !');
+    engine._log('Doigt pointeur placé — faisceau chaud HiLight centré sur ce point');
   }
   activeDrag = null;
   controls.enabled = true;
@@ -203,52 +209,120 @@ window.addEventListener('pointerup', () => {
 renderer.domElement.addEventListener('dblclick', () => {
   if (desk.pointerGroup.visible) {
     desk.pointerGroup.visible = false;
-    engine._log('Doigt pointeur retiré — faisceau recentré sur le cahier entier');
+    engine._log('Doigt pointeur retiré — faisceau recentré sur le cahier');
   }
 });
 
 // =============================================================================
-// 5. UI WIRING
+// 5. MINIMAL FLOATING DOCK & COLLAPSIBLE STUDIO DRAWER WIRING
 // =============================================================================
-function syncLampButtons(activePreset) {
+const btnDockLamp = document.getElementById('btn-dock-lamp');
+const lampSubbar = document.getElementById('lamp-subbar');
+const btnSocial = document.getElementById('btn-sc-social');
+const btnMusic = document.getElementById('btn-sc-music');
+const btnShowTell = document.getElementById('btn-sc-showtell');
+const btnTriadic = document.getElementById('btn-sc-triadic');
+const btnStyleToggle = document.getElementById('btn-style-toggle');
+const btnDrawer = document.getElementById('btn-drawer');
+const studioDrawer = document.getElementById('studio-drawer');
+
+function syncLampUi(preset) {
+  const isOn = preset !== 'off' && preset !== 'sunset';
+  btnDockLamp.classList.toggle('warm-on', isOn);
+  lampSubbar.classList.toggle('visible', isOn);
   document.querySelectorAll('[data-lamp]').forEach((b) => {
-    b.classList.remove('warm-on', 'active');
-    if (b.dataset.lamp === activePreset && activePreset !== 'off') {
-      b.classList.add('warm-on');
-    }
+    b.classList.toggle('active', b.dataset.lamp === preset);
   });
+  if (isOn) {
+    btnSocial.classList.remove('emerald-on');
+    btnMusic.classList.remove('emerald-on');
+  }
 }
 
-document.querySelectorAll('[data-cam]').forEach((btn) => {
-  btn.addEventListener('click', () => goToCamera(btn.dataset.cam));
+// 1) Main Lamp Toggle (clicking toggles Warm Lamp ON/OFF; swatches adjust 2900K/Study/Cozy/Sunset)
+btnDockLamp.addEventListener('click', () => {
+  const next = engine.scenario === 'desk_lamp' && engine.lampPreset !== 'off' ? 'off' : 'warm';
+  engine.setLampMode(next);
+  syncLampUi(next);
 });
 
+document.querySelectorAll('[data-lamp]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const p = btn.dataset.lamp;
+    engine.setLampMode(p);
+    syncLampUi(p);
+  });
+});
+
+// 2) Core Scenarios in Floating Dock
+btnShowTell.addEventListener('click', () => {
+  engine.runShowAndTell('definition');
+  syncLampUi('study');
+});
+
+btnTriadic.addEventListener('click', () => {
+  engine.runTriadicThinking();
+  syncLampUi('off');
+});
+
+btnSocial.addEventListener('click', () => {
+  const on = engine.toggleMultiFace();
+  btnSocial.classList.toggle('emerald-on', on);
+  if (on) {
+    syncLampUi('off');
+    btnMusic.classList.remove('emerald-on');
+    goToCamera('hero');
+  }
+});
+
+btnMusic.addEventListener('click', () => {
+  const next = !engine.musicMode;
+  engine.setMusicMode(next);
+  btnMusic.classList.toggle('emerald-on', next);
+  if (next) {
+    syncLampUi('off');
+    btnSocial.classList.remove('emerald-on');
+  }
+});
+
+// 3) 1-Click ELEGNT vs Robotic Toggle
+btnStyleToggle.addEventListener('click', () => {
+  const next = engine.movementStyle === 'elegnt' ? 'robotic' : 'elegnt';
+  engine.setMovementStyle(next);
+  btnStyleToggle.textContent = next === 'elegnt' ? '✦ ELEGNT' : '▤ Robot';
+  btnStyleToggle.classList.toggle('active', next === 'elegnt');
+});
+
+// 4) Ambient Lighting Mood (Jour / Soirée / Nuit) + Adaptive Glass Theme!
 document.querySelectorAll('[data-mood]').forEach((btn) => {
   btn.addEventListener('click', () => {
     const m = btn.dataset.mood;
     desk.setMood(m);
+    rig.setRoomMood(m);
     if (envTex) envTex.dispose();
     envTex = createStudioEnvironment(renderer, m);
     scene.environment = envTex;
-    scene.environmentIntensity = m === 'day' ? 1.1 : m === 'golden' ? 0.95 : 0.85;
-    bloomPass.strength = m === 'night' ? 0.4 : m === 'golden' ? 0.3 : 0.2;
-    document.querySelectorAll('[data-mood]').forEach((b) => b.classList.remove('warm-on', 'active'));
+    scene.environmentIntensity = m === 'day' ? 0.95 : m === 'golden' ? 0.9 : 0.8;
+    renderer.toneMappingExposure = m === 'day' ? 1.05 : m === 'golden' ? 1.08 : 1.12;
+    bloomPass.strength = m === 'day' ? 0.22 : m === 'golden' ? 0.32 : 0.42;
+    document.body.classList.toggle('theme-light', m === 'day');
+
+    document.querySelectorAll('[data-mood]').forEach((b) => b.classList.remove('active', 'warm-on'));
     btn.classList.add(m === 'day' ? 'active' : 'warm-on');
   });
 });
 
-document.getElementById('btn-style-elegnt').addEventListener('click', (e) => {
-  engine.setMovementStyle('elegnt');
-  e.currentTarget.classList.add('active');
-  document.getElementById('btn-style-robotic').classList.remove('active');
-  document.getElementById('lbl-style-badge').textContent = 'EXPRESSIF';
-});
+// 5) Collapsible Studio Drawer
+function toggleDrawer(force) {
+  const open = force !== undefined ? force : !studioDrawer.classList.contains('open');
+  studioDrawer.classList.toggle('open', open);
+  studioDrawer.setAttribute('aria-hidden', String(!open));
+  btnDrawer.classList.toggle('open', open);
+}
+btnDrawer.addEventListener('click', () => toggleDrawer());
 
-document.getElementById('btn-style-robotic').addEventListener('click', (e) => {
-  engine.setMovementStyle('robotic');
-  e.currentTarget.classList.add('active');
-  document.getElementById('btn-style-elegnt').classList.remove('active');
-  document.getElementById('lbl-style-badge').textContent = 'ROBOTIQUE';
+document.querySelectorAll('[data-cam]').forEach((btn) => {
+  btn.addEventListener('click', () => goToCamera(btn.dataset.cam));
 });
 
 document.querySelectorAll('[data-exp]').forEach((btn) => {
@@ -261,43 +335,17 @@ document.querySelectorAll('[data-exp]').forEach((btn) => {
 
 document.getElementById('btn-follow-hands').addEventListener('click', (e) => {
   engine.followHandsLamp = !engine.followHandsLamp;
-  e.currentTarget.textContent = engine.followHandsLamp ? 'SUIVI MAIN : ON' : 'SUIVI MAIN : OFF';
-  e.currentTarget.className = engine.followHandsLamp ? 'mini emerald-on' : 'mini';
-});
-
-document.querySelectorAll('[data-lamp]').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    engine.setLampMode(btn.dataset.lamp);
-    syncLampButtons(btn.dataset.lamp);
-  });
-});
-
-document.getElementById('btn-sc-showtell').addEventListener('click', () => {
-  engine.runShowAndTell('definition');
-  syncLampButtons('study');
-});
-document.getElementById('btn-sc-triadic').addEventListener('click', () => {
-  engine.runTriadicThinking();
-  syncLampButtons('off');
-});
-document.getElementById('btn-sc-nudge').addEventListener('click', () => {
-  engine.runSilentNudge();
-  syncLampButtons('off');
-});
-document.getElementById('btn-sc-social').addEventListener('click', (e) => {
-  const on = engine.toggleMultiFace();
-  e.currentTarget.classList.toggle('emerald-on', on);
-  if (on) goToCamera('hero');
-});
-document.getElementById('btn-sc-music').addEventListener('click', (e) => {
-  const next = !engine.musicMode;
-  engine.setMusicMode(next);
-  e.currentTarget.classList.toggle('emerald-on', next);
-  syncLampButtons('off');
+  e.currentTarget.textContent = engine.followHandsLamp ? 'Suivi Main : ON' : 'Suivi Main : OFF';
+  e.currentTarget.classList.toggle('on', engine.followHandsLamp);
 });
 
 document.querySelectorAll('[data-react]').forEach((btn) => {
   btn.addEventListener('click', () => engine.triggerReaction(btn.dataset.react));
+});
+
+document.getElementById('btn-sc-nudge').addEventListener('click', () => {
+  engine.runSilentNudge();
+  syncLampUi('off');
 });
 
 document.querySelectorAll('[data-board]').forEach((btn) => {
@@ -307,22 +355,25 @@ document.querySelectorAll('[data-board]').forEach((btn) => {
     btn.classList.add('active');
     if (btn.dataset.board !== 'none' && engine.scenario === 'desk_lamp') {
       engine.setLampMode('off');
-      syncLampButtons('off');
+      syncLampUi('off');
     }
   });
 });
 
 document.getElementById('btn-sound').addEventListener('click', (e) => {
   sound.enabled = !sound.enabled;
-  if (!sound.enabled && engine.musicMode) engine.setMusicMode(false);
-  e.currentTarget.textContent = sound.enabled ? 'SON : ON' : 'SON : OFF';
+  if (!sound.enabled && engine.musicMode) {
+    engine.setMusicMode(false);
+    btnMusic.classList.remove('emerald-on');
+  }
+  e.currentTarget.textContent = sound.enabled ? 'Son : ON' : 'Son : OFF';
   e.currentTarget.classList.toggle('active', sound.enabled);
 });
 
 document.getElementById('btn-bridge').addEventListener('click', (e) => {
   const next = !engine.liveBridgeEnabled;
   engine.toggleLiveBridge(next);
-  e.currentTarget.textContent = next ? 'SYNC LIVE : ON' : 'SYNC LIVE : OFF';
+  e.currentTarget.textContent = next ? 'Sync Live : ON' : 'Sync Live : OFF';
   e.currentTarget.classList.toggle('emerald-on', next);
 });
 
@@ -332,6 +383,7 @@ function toggleHud() {
   const hide = !hudEl.classList.contains('hidden');
   hudEl.classList.toggle('hidden', hide);
   unhideBtn.classList.toggle('visible', hide);
+  if (hide) toggleDrawer(false);
 }
 document.getElementById('btn-hide').addEventListener('click', toggleHud);
 unhideBtn.addEventListener('click', toggleHud);
@@ -343,6 +395,8 @@ window.addEventListener('keydown', (ev) => {
   else if (ev.key === '4') goToCamera('rear');
   else if (ev.key === '5') goToCamera('top');
   else if (ev.key.toLowerCase() === 'h') toggleHud();
+  else if (ev.key.toLowerCase() === 's') toggleDrawer();
+  else if (ev.key === 'Escape') toggleDrawer(false);
 });
 
 window.addEventListener('resize', () => {
@@ -355,13 +409,10 @@ window.addEventListener('resize', () => {
 });
 
 // =============================================================================
-// 6. MAIN 60–120 FPS ANIMATION & TELEMETRY LOOP
+// 6. MAIN 60-120 FPS RENDER & TELEMETRY LOOP
 // =============================================================================
 const tPan = document.getElementById('t-pan');
 const tPitch = document.getElementById('t-pitch');
-const tRoll = document.getElementById('t-roll');
-const tVPan = document.getElementById('t-vpan');
-const tVPitch = document.getElementById('t-vpitch');
 const tFps = document.getElementById('t-fps');
 const tTorque = document.getElementById('t-torque');
 const tTorqueFill = document.getElementById('t-torque-fill');
@@ -371,6 +422,7 @@ let fpsFrames = 0;
 let fpsLast = prevTs;
 let curFps = 60;
 let hudTick = 0;
+let lastSyncedLamp = null;
 
 function animate(now) {
   requestAnimationFrame(animate);
@@ -384,7 +436,6 @@ function animate(now) {
     fpsLast = now;
   }
 
-  // Smooth camera preset transition
   if (camLerp) {
     camLerp.t += dt;
     const u = Math.min(1, camLerp.t / camLerp.dur);
@@ -394,7 +445,6 @@ function animate(now) {
     if (u >= 1) camLerp = null;
   }
 
-  // Subtle pulse on pointing finger reticle
   if (desk.pointerGroup.visible) {
     const s = 1 + Math.sin(now * 0.006) * 0.12;
     desk.pointerGroup.children[0].scale.set(s, s, 1);
@@ -404,21 +454,25 @@ function animate(now) {
   controls.update();
   composer.render();
 
-  // Refresh telemetry HUD at ~15 Hz
   hudTick += 1;
   if (hudTick % 4 === 0) {
+    if (lastSyncedLamp !== engine.lampPreset) {
+      lastSyncedLamp = engine.lampPreset;
+      syncLampUi(engine.lampPreset);
+    }
+    if (brandDot) {
+      brandDot.style.background = engine.accentHex || '#f59e0b';
+      brandDot.style.boxShadow = `0 0 10px ${engine.accentHex || '#f59e0b'}`;
+    }
     tPan.textContent = `${engine.curPan >= 0 ? '+' : ''}${engine.curPan.toFixed(1)}°`;
     tPitch.textContent = `${engine.curPitch >= 0 ? '+' : ''}${engine.curPitch.toFixed(1)}°`;
-    tRoll.textContent = `${engine.curRoll >= 0 ? '+' : ''}${engine.curRoll.toFixed(1)}°`;
-    tVPan.textContent = `${Math.round(engine.velPan)}°/s`;
-    tVPitch.textContent = `${Math.round(engine.velPitch)}°/s`;
     tFps.textContent = String(curFps);
 
     const tq = engine.torquePct;
     const label = tq >= 78 ? 'HIGH' : tq >= 55 ? 'MED' : 'SAFE';
     tTorque.textContent = `${tq}% · ${label}`;
     tTorqueFill.style.width = `${tq}%`;
-    tTorqueFill.style.backgroundColor = tq >= 78 ? '#fb7185' : tq >= 55 ? '#f59e0b' : '#34d399';
+    tTorqueFill.style.backgroundColor = tq >= 78 ? '#ef4444' : tq >= 55 ? '#f59e0b' : '#10b981';
   }
 }
 

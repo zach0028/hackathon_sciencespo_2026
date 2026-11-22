@@ -1,22 +1,22 @@
 import * as THREE from 'three';
 
 /**
- * Build a custom Studio Softbox PMREM Environment for crisp photorealistic PBR
- * reflections on brushed titanium, anodized OM3 drums, clearcoat glass & AR lenses.
+ * Studio PMREM Environment for photorealistic PBR reflections on brushed aluminum,
+ * polished titanium Pixel frame, sapphire AR camera lenses, and MacBook Pro glass.
  */
-export function createStudioEnvironment(renderer, mood = 'night') {
+export function createStudioEnvironment(renderer, mood = 'day') {
   const pmrem = new THREE.PMREMGenerator(renderer);
   pmrem.compileEquirectangularShader();
 
   const envScene = new THREE.Scene();
   const bgColors = {
-    day: 0x262c38,
-    golden: 0x1e1918,
-    night: 0x0b0e16,
+    day: 0xdce2ea,
+    golden: 0x3b2c25,
+    night: 0x101520,
   };
-  envScene.background = new THREE.Color(bgColors[mood] ?? 0x0b0e16);
+  envScene.background = new THREE.Color(bgColors[mood] ?? 0xdce2ea);
 
-  const addSoftbox = (w, h, color, intensity, pos, lookAt = [0, 0, 0]) => {
+  const addPanel = (w, h, color, intensity, pos, lookAt = [0, 0, 0]) => {
     const geo = new THREE.PlaneGeometry(w, h);
     const mat = new THREE.MeshBasicMaterial({
       color: new THREE.Color(color).multiplyScalar(intensity),
@@ -29,32 +29,32 @@ export function createStudioEnvironment(renderer, mood = 'night') {
   };
 
   if (mood === 'day') {
-    addSoftbox(14, 9, 0xfff8ee, 2.4, [0, 8, 2]);
-    addSoftbox(10, 6, 0xdceaff, 1.8, [-9, 4, 3]);
-    addSoftbox(8, 5, 0xffe8cc, 1.4, [9, 3, -2]);
-    addSoftbox(12, 4, 0xffffff, 0.9, [0, 2, -9]);
+    // Bright sunlit architectural room (like Apple ELEGNT!)
+    addPanel(14, 10, 0xfffaf2, 2.8, [-10, 5, 3]);   // Big sunlit window left
+    addPanel(16, 12, 0xffffff, 1.5, [0, 10, 0]);    // Bright ceiling bounce
+    addPanel(14, 8, 0xf2ece2, 1.1, [10, 4, 2]);     // Warm plaster right wall bounce
+    addPanel(14, 6, 0xe8effa, 0.9, [0, 3, 10]);     // Soft sky fill
+    addPanel(16, 10, 0x8f775d, 0.55, [0, -6, 0]);   // Warm oak desk bounce
   } else if (mood === 'golden') {
-    addSoftbox(12, 8, 0xffd29a, 2.2, [-8, 5, 4]);
-    addSoftbox(10, 6, 0x7aa2d8, 1.1, [8, 6, -3]);
-    addSoftbox(12, 4, 0xffaa66, 1.4, [0, 8, 0]);
-    addSoftbox(10, 3, 0xffe4c4, 0.7, [0, 1.5, -8]);
+    addPanel(12, 9, 0xffc682, 2.6, [-10, 4.5, 4]);  // Golden sunset window
+    addPanel(14, 8, 0x9ab4de, 1.1, [9, 6, -2]);     // Cool twilight sky fill
+    addPanel(12, 6, 0xffd7ad, 1.2, [0, 9, 0]);
+    addPanel(12, 5, 0x5c4637, 0.5, [0, -5, 0]);
   } else {
-    // Cozy Night Studio — deep contrast with crisp rim strips for Apple keynote look
-    addSoftbox(10, 5, 0x8fb4e8, 1.35, [-7, 6, -5]);
-    addSoftbox(9, 4, 0xffcfa0, 1.15, [7, 5, 5]);
-    addSoftbox(12, 3, 0xd8e6ff, 0.85, [0, 9, 0]);
-    addSoftbox(8, 2.5, 0x4d6b99, 0.65, [0, 2, -9]);
+    addPanel(10, 5, 0x8db3eb, 1.25, [-8, 6, -4]);
+    addPanel(10, 5, 0xffcfa0, 1.1, [8, 5, 5]);
+    addPanel(12, 4, 0xd4e4ff, 0.75, [0, 9, 0]);
   }
 
-  const rt = pmrem.fromScene(envScene, 0.04);
+  const rt = pmrem.fromScene(envScene, 0.035);
   pmrem.dispose();
   return rt.texture;
 }
 
 /**
- * Procedural Architectural Walnut Wood (albedo + bump + roughness maps).
+ * Natural Architectural Light Scandinavian Oak Wood (albedo + bump + roughness).
  */
-export function createWalnutWoodTextures() {
+export function createOakWoodTextures() {
   const size = 1024;
   const colorCanvas = document.createElement('canvas');
   colorCanvas.width = size;
@@ -66,68 +66,64 @@ export function createWalnutWoodTextures() {
   bumpCanvas.height = size;
   const bctx = bumpCanvas.getContext('2d');
 
-  // Rich satin walnut base
-  ctx.fillStyle = '#3b291d';
+  // Warm natural light-oak base (Apple Store / Scandinavian study desk tone)
+  ctx.fillStyle = '#c5a57e';
   ctx.fillRect(0, 0, size, size);
   bctx.fillStyle = '#808080';
   bctx.fillRect(0, 0, size, size);
 
-  // Layered flowing wood fibers
   for (let y = 0; y < size; y += 2) {
     const wave =
-      Math.sin(y * 0.017) * 14 +
-      Math.sin(y * 0.053 + 1.2) * 5 +
-      Math.cos(y * 0.008) * 22;
-    const tone = Math.sin((y + wave) * 0.065);
-    const fine = Math.sin(y * 0.37 + wave * 0.12) * 0.5 + 0.5;
+      Math.sin(y * 0.014) * 18 +
+      Math.sin(y * 0.048 + 0.9) * 6 +
+      Math.cos(y * 0.007) * 26;
+    const tone = Math.sin((y + wave) * 0.058);
+    const fine = Math.sin(y * 0.42 + wave * 0.14) * 0.5 + 0.5;
 
-    const r = Math.round(52 + tone * 15 + fine * 9);
-    const g = Math.round(35 + tone * 10 + fine * 6);
-    const b = Math.round(24 + tone * 6 + fine * 4);
+    const r = Math.round(186 + tone * 16 + fine * 10);
+    const g = Math.round(154 + tone * 14 + fine * 8);
+    const b = Math.round(118 + tone * 11 + fine * 6);
     ctx.fillStyle = `rgb(${r},${g},${b})`;
     ctx.fillRect(0, y, size, 2);
 
-    const bv = Math.round(122 + tone * 14 + fine * 10);
+    const bv = Math.round(124 + tone * 12 + fine * 10);
     bctx.fillStyle = `rgb(${bv},${bv},${bv})`;
     bctx.fillRect(0, y, size, 2);
   }
 
-  // Subtle plank seams & natural darker grain streaks
-  for (let i = 0; i < 160; i++) {
-    const x = (i * 197) % size;
-    const y = (i * 83) % size;
-    const w = 180 + ((i * 53) % 420);
-    const h = 1 + (i % 3);
-    ctx.fillStyle = i % 3 === 0 ? 'rgba(22, 13, 8, 0.22)' : 'rgba(96, 68, 46, 0.12)';
+  // Fine oak pores & subtle medullary rays
+  for (let i = 0; i < 220; i++) {
+    const x = (i * 211) % size;
+    const y = (i * 79) % size;
+    const w = 140 + ((i * 61) % 360);
+    const h = 1 + (i % 2);
+    ctx.fillStyle = i % 3 === 0 ? 'rgba(118, 86, 54, 0.16)' : 'rgba(235, 214, 184, 0.16)';
     ctx.fillRect(x, y, w, h);
-    bctx.fillStyle = i % 3 === 0 ? 'rgba(60, 60, 60, 0.25)' : 'rgba(170, 170, 170, 0.14)';
+    bctx.fillStyle = i % 3 === 0 ? 'rgba(75, 75, 75, 0.2)' : 'rgba(175, 175, 175, 0.12)';
     bctx.fillRect(x, y, w, h);
   }
 
-  // Subtle horizontal board joints
-  ctx.fillStyle = 'rgba(15, 9, 5, 0.38)';
+  // Subtle plank join lines
+  ctx.fillStyle = 'rgba(115, 84, 54, 0.22)';
   ctx.fillRect(0, 340, size, 2);
   ctx.fillRect(0, 682, size, 2);
-  bctx.fillStyle = '#303030';
-  bctx.fillRect(0, 340, size, 2);
-  bctx.fillRect(0, 682, size, 2);
 
   const map = new THREE.CanvasTexture(colorCanvas);
   map.colorSpace = THREE.SRGBColorSpace;
   map.wrapS = map.wrapT = THREE.RepeatWrapping;
-  map.repeat.set(2.2, 1.4);
+  map.repeat.set(2.0, 1.3);
   map.anisotropy = 8;
 
   const bumpMap = new THREE.CanvasTexture(bumpCanvas);
   bumpMap.wrapS = bumpMap.wrapT = THREE.RepeatWrapping;
-  bumpMap.repeat.set(2.2, 1.4);
+  bumpMap.repeat.set(2.0, 1.3);
   bumpMap.anisotropy = 8;
 
   return { map, bumpMap };
 }
 
 /**
- * Procedural Charcoal Wool Felt Desk Mat Texture.
+ * Architectural Warm Stone/Linen Felt Desk Mat Texture.
  */
 export function createFeltMatTextures() {
   const size = 512;
@@ -136,29 +132,27 @@ export function createFeltMatTextures() {
   c.height = size;
   const ctx = c.getContext('2d');
 
-  ctx.fillStyle = '#1b1d22';
+  ctx.fillStyle = '#383c44';
   ctx.fillRect(0, 0, size, size);
 
-  // Subtle woven fiber micro-noise
-  let seed = 1337;
+  let seed = 4242;
   const rand = () => {
     seed = (seed * 16807) % 2147483647;
     return (seed - 1) / 2147483646;
   };
-  for (let i = 0; i < 16000; i++) {
+  for (let i = 0; i < 18000; i++) {
     const x = rand() * size;
     const y = rand() * size;
-    const v = 22 + Math.floor(rand() * 24);
+    const v = 48 + Math.floor(rand() * 26);
     ctx.fillStyle = `rgb(${v},${v + 2},${v + 5})`;
     ctx.fillRect(x, y, 1.6, 1.6);
   }
-  // Fine diagonal felt strands
-  ctx.strokeStyle = 'rgba(255,255,255,0.025)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.03)';
   ctx.lineWidth = 1;
-  for (let i = 0; i < 320; i++) {
+  for (let i = 0; i < 360; i++) {
     const x = rand() * size;
     const y = rand() * size;
-    const len = 4 + rand() * 10;
+    const len = 4 + rand() * 11;
     const ang = rand() * Math.PI;
     ctx.beginPath();
     ctx.moveTo(x, y);
@@ -175,7 +169,7 @@ export function createFeltMatTextures() {
 }
 
 /**
- * Brushed Anodized Aluminum Bump Map for DJI OM3 motor housings & Pixel rail.
+ * Brushed Anodized Aluminum Bump Map for DJI OM3 motor drums & Pixel titanium rails.
  */
 export function createBrushedMetalTexture() {
   const c = document.createElement('canvas');
@@ -185,7 +179,7 @@ export function createBrushedMetalTexture() {
   ctx.fillStyle = '#808080';
   ctx.fillRect(0, 0, 512, 512);
   for (let y = 0; y < 512; y++) {
-    const v = 112 + Math.floor((Math.sin(y * 1.9) * 0.5 + 0.5) * 32);
+    const v = 116 + Math.floor((Math.sin(y * 2.1) * 0.5 + 0.5) * 26);
     ctx.fillStyle = `rgb(${v},${v},${v})`;
     ctx.fillRect(0, y, 512, 1);
   }
@@ -196,7 +190,237 @@ export function createBrushedMetalTexture() {
 }
 
 /**
- * High-DPI Open Study Notebook Page Texture (crisp math/economics typography + graphs + margin notes).
+ * Photorealistic MacBook Pro Backlit Keyboard Deck Texture (keys + speaker grilles + Touch ID).
+ */
+export function createMacBookKeyboardTexture() {
+  const w = 1024;
+  const h = 640;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d');
+
+  // Anodized silver/space-gray deck around keyboard well
+  ctx.fillStyle = '#adb4be';
+  ctx.fillRect(0, 0, w, h);
+
+  // Speaker grille micro-perforations (left & right of keyboard)
+  ctx.fillStyle = 'rgba(20, 24, 30, 0.72)';
+  for (const sx of [42, w - 102]) {
+    for (let x = sx; x < sx + 60; x += 6) {
+      for (let y = 52; y < 340; y += 6) {
+        ctx.beginPath();
+        ctx.arc(x, y, 1.35, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  // Recessed black anodized keyboard well
+  const kx = 128;
+  const ky = 44;
+  const kw = w - 256;
+  const kh = 310;
+  ctx.fillStyle = '#14171c';
+  ctx.beginPath();
+  ctx.roundRect(kx, ky, kw, kh, 12);
+  ctx.fill();
+
+  // Key rows
+  const rows = [
+    { count: 14, h: 32, y: ky + 12 },
+    { count: 14, h: 42, y: ky + 52 },
+    { count: 14, h: 42, y: ky + 102 },
+    { count: 13, h: 42, y: ky + 152 },
+    { count: 12, h: 42, y: ky + 202 },
+  ];
+  const gap = 7;
+  rows.forEach((row, rIdx) => {
+    const cellW = (kw - 20 - gap * (row.count - 1)) / row.count;
+    for (let i = 0; i < row.count; i++) {
+      const x = kx + 10 + i * (cellW + gap);
+      ctx.fillStyle = '#1f232a';
+      ctx.beginPath();
+      ctx.roundRect(x, row.y, cellW, row.h, 5);
+      ctx.fill();
+      // Subtle top edge highlight + white backlight glyph
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      if (rIdx === 0 && i === row.count - 1) {
+        // Touch ID ring
+        ctx.strokeStyle = 'rgba(180,190,205,0.45)';
+        ctx.beginPath();
+        ctx.arc(x + cellW / 2, row.y + row.h / 2, 9, 0, Math.PI * 2);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = 'rgba(235, 242, 255, 0.42)';
+        ctx.fillRect(x + cellW * 0.35, row.y + row.h * 0.44, cellW * 0.3, 3);
+      }
+    }
+  });
+
+  // Bottom modifier + Spacebar row
+  const by = ky + 252;
+  const bottomKeys = [0.95, 0.95, 0.95, 1.25, 5.2, 1.25, 0.95, 0.95, 0.95, 0.95];
+  const totalU = bottomKeys.reduce((a, b) => a + b, 0);
+  const unitW = (kw - 20 - gap * (bottomKeys.length - 1)) / totalU;
+  let bx = kx + 10;
+  bottomKeys.forEach((u) => {
+    const bw = u * unitW;
+    ctx.fillStyle = '#1f232a';
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, 46, 6);
+    ctx.fill();
+    bx += bw + gap;
+  });
+
+  // Large Force Touch Glass Trackpad
+  ctx.fillStyle = '#9ea6b2';
+  ctx.strokeStyle = 'rgba(40, 46, 56, 0.35)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(w * 0.31, 384, w * 0.38, 224, 14);
+  ctx.fill();
+  ctx.stroke();
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  return tex;
+}
+
+/**
+ * Photorealistic MacBook Pro Liquid Retina Display Texture (clean macOS + Osmo Studio UI).
+ */
+export function createMacBookScreenTexture() {
+  const w = 1024;
+  const h = 660;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d');
+
+  // Subtle macOS wallpaper gradient behind clean floating Osmo Studio window
+  const bg = ctx.createLinearGradient(0, 0, w, h);
+  bg.addColorStop(0, '#101828');
+  bg.addColorStop(0.55, '#192234');
+  bg.addColorStop(1, '#261e2a');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, w, h);
+
+  // macOS Menu Bar + Camera Notch
+  ctx.fillStyle = 'rgba(10, 14, 22, 0.72)';
+  ctx.fillRect(0, 0, w, 28);
+  ctx.fillStyle = '#05070a';
+  ctx.beginPath();
+  ctx.roundRect(w / 2 - 58, 0, 116, 26, [0, 0, 10, 10]);
+  ctx.fill();
+
+  ctx.fillStyle = '#e2e8f0';
+  ctx.font = '600 13px -apple-system, sans-serif';
+  ctx.fillText('   Osmo Studio   File   Edit   View', 18, 19);
+  ctx.textAlign = 'right';
+  ctx.fillText('Gemini 3.8 Live · 16:38', w - 18, 19);
+  ctx.textAlign = 'left';
+
+  // Main Studio App Window
+  ctx.fillStyle = 'rgba(11, 15, 23, 0.94)';
+  ctx.strokeStyle = 'rgba(226, 236, 250, 0.14)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(38, 48, w - 76, h - 104, 16);
+  ctx.fill();
+  ctx.stroke();
+
+  // Traffic lights
+  ['#ff5f56', '#ffbd2e', '#27c93f'].forEach((col, i) => {
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.arc(64 + i * 20, 70, 5.5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '700 13px "SF Mono", Menlo, monospace';
+  ctx.fillText('OSMO // DESK STUDIO · AI : GEMINI', 140, 75);
+
+  // Left camera feed mockup card
+  ctx.fillStyle = '#151c29';
+  ctx.beginPath();
+  ctx.roundRect(62, 98, 520, 290, 12);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 208, 136, 0.45)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(170, 150, 295, 190);
+  ctx.fillStyle = '#ffd088';
+  ctx.font = '600 13px "SF Mono", Menlo, monospace';
+  ctx.fillText('OPTICAL FEED // PIXEL 11 PRO · 4K DESK LOCKED', 80, 124);
+  ctx.fillStyle = '#34d399';
+  ctx.fillText('SHEET DETECTED · HILIGHT WARM 2900K', 176, 144);
+
+  // Bottom voice waveform bar
+  ctx.fillStyle = '#141a26';
+  ctx.beginPath();
+  ctx.roundRect(62, 404, 520, 174, 12);
+  ctx.fill();
+  ctx.fillStyle = '#60a5fa';
+  ctx.font = '700 13px "SF Mono", Menlo, monospace';
+  ctx.fillText('GEMINI 3.8 LIVE · NON_BLOCKING TOOLS ACTIVE', 80, 432);
+  for (let i = 0; i < 36; i++) {
+    const bh = 14 + Math.abs(Math.sin(i * 0.55)) * 46;
+    ctx.fillStyle = i % 3 === 0 ? '#ffd088' : '#60a5fa';
+    ctx.fillRect(82 + i * 13, 505 - bh / 2, 6, bh);
+  }
+
+  // Right telemetry + notes column
+  ctx.fillStyle = '#141a26';
+  ctx.beginPath();
+  ctx.roundRect(602, 98, 360, 480, 12);
+  ctx.fill();
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '700 13px "SF Mono", Menlo, monospace';
+  ctx.fillText('TELEMETRY // DJI OM3 + ELEGNT', 622, 126);
+
+  const stats = [
+    ['MODE', 'ELEGNT COMPANION', '#34d399'],
+    ['HILIGHT', 'WARM LAMP · 2900K', '#ffd088'],
+    ['VISION', 'APPLE ANE · 11 ms', '#60a5fa'],
+    ['MEMORY', 'SQLITE FTS5 · READY', '#cbd5e1'],
+  ];
+  stats.forEach(([k, v, col], idx) => {
+    ctx.fillStyle = 'rgba(255,255,255,0.04)';
+    ctx.beginPath();
+    ctx.roundRect(622, 150 + idx * 64, 320, 50, 8);
+    ctx.fill();
+    ctx.fillStyle = '#7c8ca6';
+    ctx.font = '600 11px "SF Mono", Menlo, monospace';
+    ctx.fillText(k, 636, 170 + idx * 64);
+    ctx.fillStyle = col;
+    ctx.font = '700 14px "SF Mono", Menlo, monospace';
+    ctx.fillText(v, 636, 190 + idx * 64);
+  });
+
+  // macOS Dock pill at bottom
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
+  ctx.beginPath();
+  ctx.roundRect(w / 2 - 140, h - 42, 280, 32, 10);
+  ctx.fill();
+  const dockCols = ['#38bdf8', '#f59e0b', '#34d399', '#818cf8', '#fb7185', '#e2e8f0'];
+  dockCols.forEach((col, i) => {
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.roundRect(w / 2 - 118 + i * 42, h - 36, 22, 22, 6);
+    ctx.fill();
+  });
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  return tex;
+}
+
+/**
+ * High-DPI Open Study Notebook Page Texture.
  */
 export function createNotebookPageTexture(side = 'left') {
   const w = 1024;
@@ -209,8 +433,8 @@ export function createNotebookPageTexture(side = 'left') {
   // Warm archival cotton paper
   const grad = ctx.createLinearGradient(side === 'left' ? w : 0, 0, side === 'left' ? 0 : w, 0);
   grad.addColorStop(0.0, '#ddd5c5');
-  grad.addColorStop(0.09, '#f3eee2');
-  grad.addColorStop(1.0, '#f7f3ea');
+  grad.addColorStop(0.09, '#f5f0e4');
+  grad.addColorStop(1.0, '#fbf8f0');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, w, h);
 
@@ -224,7 +448,6 @@ export function createNotebookPageTexture(side = 'left') {
     }
   }
 
-  // Top header rule
   ctx.strokeStyle = 'rgba(65, 82, 108, 0.28)';
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -233,7 +456,6 @@ export function createNotebookPageTexture(side = 'left') {
   ctx.stroke();
 
   if (side === 'left') {
-    // Left page: Economics & Financial Analysis + Supply/Demand Curve
     ctx.fillStyle = '#5a6b82';
     ctx.font = '600 22px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
     ctx.fillText('SCIENCES PO · ÉCONOMIE & ANALYSE FINANCIÈRE', 78, 96);
@@ -243,7 +465,6 @@ export function createNotebookPageTexture(side = 'left') {
     ctx.font = '700 40px Georgia, serif';
     ctx.fillText('Chapitre 11 — Analyse du Résultat', 78, 184);
 
-    // Highlight strip
     ctx.fillStyle = 'rgba(255, 214, 102, 0.34)';
     ctx.fillRect(74, 214, 620, 44);
     ctx.fillStyle = '#1b2738';
@@ -259,7 +480,6 @@ export function createNotebookPageTexture(side = 'left') {
     ];
     lines.forEach((ln, i) => ctx.fillText(ln, 84, 304 + i * 40));
 
-    // Formula box
     ctx.strokeStyle = '#33588e';
     ctx.lineWidth = 3;
     ctx.fillStyle = 'rgba(51, 88, 142, 0.06)';
@@ -273,7 +493,6 @@ export function createNotebookPageTexture(side = 'left') {
     ctx.fillStyle = '#475c78';
     ctx.fillText('Marge de sécurité (Graham) : Prix < 0.67 × Valeur Intrinsèque', 118, 536);
 
-    // Diagram: Valuation / Equilibrium Curve
     const gx = 120;
     const gy = 630;
     const gw = 760;
@@ -286,7 +505,6 @@ export function createNotebookPageTexture(side = 'left') {
     ctx.lineTo(gx + gw, gy + gh);
     ctx.stroke();
 
-    // Curve 1 (blue)
     ctx.strokeStyle = '#2b6cb0';
     ctx.lineWidth = 5;
     ctx.beginPath();
@@ -294,7 +512,6 @@ export function createNotebookPageTexture(side = 'left') {
     ctx.quadraticCurveTo(gx + 280, gy + 260, gx + 680, gy + 375);
     ctx.stroke();
 
-    // Curve 2 (terracotta)
     ctx.strokeStyle = '#c05621';
     ctx.lineWidth = 5;
     ctx.beginPath();
@@ -302,7 +519,6 @@ export function createNotebookPageTexture(side = 'left') {
     ctx.quadraticCurveTo(gx + 340, gy + 265, gx + 670, gy + 68);
     ctx.stroke();
 
-    // Equilibrium dot & dashed projections
     const ex = gx + 340;
     const ey = gy + 236;
     ctx.setLineDash([8, 8]);
@@ -326,13 +542,11 @@ export function createNotebookPageTexture(side = 'left') {
     ctx.fillText('Prix (P)', gx - 10, gy - 16);
     ctx.fillText('Quantité (Q)', gx + gw - 140, gy + gh + 36);
 
-    // Handwritten blue ink margin note
     ctx.fillStyle = '#1d4ed8';
     ctx.font = 'italic 28px Georgia, serif';
     ctx.fillText('→ Vérifier Q2 avec Osmo !', 120, 1170);
     ctx.fillText('   Attention au signe de ΔBFR', 120, 1212);
   } else {
-    // Right page: Physics & Thermodynamics Exercises (Qmax & Practice Work)
     ctx.fillStyle = '#5a6b82';
     ctx.font = '600 22px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
     ctx.fillText('THERMODYNAMIQUE & EXERCICES PRATIQUES', 78, 96);
@@ -353,7 +567,6 @@ export function createNotebookPageTexture(side = 'left') {
     ctx.fillText('e = √(k · ρ · c)    [W·s½ / (m²·K)]', 86, 336);
     ctx.fillText('q_max = e · ΔT / √(π · t)', 86, 396);
 
-    // Exercise section
     ctx.fillStyle = '#1e293b';
     ctx.font = '700 28px -apple-system, sans-serif';
     ctx.fillText('Exercice d\'application :', 84, 494);
@@ -369,7 +582,6 @@ export function createNotebookPageTexture(side = 'left') {
     ];
     exLines.forEach((ln, i) => ctx.fillText(ln, 84, 546 + i * 42));
 
-    // Student handwritten draft answer in blue ballpoint pen
     ctx.strokeStyle = 'rgba(29, 78, 216, 0.25)';
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -387,7 +599,6 @@ export function createNotebookPageTexture(side = 'left') {
     ctx.fillText('→ e_alu >> e_bois, donc le flux de chaleur', 104, 1066);
     ctx.fillText('  extrait de la peau est ~50× plus élevé !', 104, 1110);
 
-    // Pencil check circle around Q1
     ctx.strokeStyle = '#d97706';
     ctx.lineWidth = 4;
     ctx.beginPath();
